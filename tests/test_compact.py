@@ -128,6 +128,33 @@ def test_compact_skips_unsafe_target(memory_dir, handoffs_dir, tmp_path, capsys)
     assert "unsafe targets" in out.lower()
 
 
+def test_same_title_different_detail_produces_distinct_markers(memory_dir, handoffs_dir):
+    # Two multi-line entries with the same title + same target + same day but
+    # DIFFERENT detail must produce distinct markers, otherwise the second
+    # flatten silently skips appending while the index rewrite still strips
+    # its detail lines = data loss.
+    write_card(memory_dir, "topic-x", "original\n")
+    write_memory_index(memory_dir, [
+        "# Memory Index",
+        "## Section",
+        "- [topic-x](topic-x.md) - first hook",
+        "  detail block ONE - unique content here",
+        "- [topic-x](topic-x.md) - second hook",
+        "  detail block TWO - totally different unique content",
+    ])
+    code = run(cfg(memory_dir, handoffs_dir, max_lines=2), apply=True)
+    assert code == 0
+    topic = (memory_dir / "topic-x.md").read_text()
+    # Both detail blocks should have been appended (two distinct markers).
+    assert topic.count("<!-- compact:") == 2
+    assert "detail block ONE" in topic
+    assert "detail block TWO" in topic
+    # And both detail lines should have been stripped from MEMORY.md.
+    index = (memory_dir / "MEMORY.md").read_text()
+    assert "detail block ONE" not in index
+    assert "detail block TWO" not in index
+
+
 def test_topic_file_append_shape(memory_dir, handoffs_dir):
     write_card(memory_dir, "topic-e", "original")
     write_memory_index(memory_dir, [

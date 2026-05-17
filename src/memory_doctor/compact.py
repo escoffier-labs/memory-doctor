@@ -34,9 +34,20 @@ def _atomic_write_text(path: Path, content: str) -> None:
         raise
 
 
-def _flatten_marker(today: str, title: str) -> str:
-    """Stable marker so re-applying the same flatten plan is idempotent."""
-    h = hashlib.sha256(title.encode()).hexdigest()[:8]
+def _flatten_marker(today: str, flatten: "Flatten") -> str:
+    """Stable marker so re-applying the same flatten plan is idempotent.
+
+    Hashes the FULL payload (target + title + bullet hook + detail lines) so
+    two entries with the same title but different detail don't collide and
+    silently swallow each other's content.
+    """
+    payload = "|".join([
+        flatten.target_name,
+        flatten.title,
+        flatten.bullet_text.strip(),
+        "\n".join(flatten.detail_lines),
+    ])
+    h = hashlib.sha256(payload.encode()).hexdigest()[:12]
     return f"<!-- compact:{today}:{h} -->"
 
 
@@ -124,7 +135,7 @@ def _apply_flatten(memory_dir: Path, plan: CompactionPlan) -> None:
         except UnsafeTargetError:
             continue
         existing = target_path.read_text()
-        marker = _flatten_marker(today, flatten.title)
+        marker = _flatten_marker(today, flatten)
         if marker in existing:
             # Already applied for this title/date - skip the topic append but
             # still drop the detail lines from the index below for consistency.
