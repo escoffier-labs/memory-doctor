@@ -5,7 +5,20 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-DEFAULT_MEMORY_DIR = "~/.claude/projects/-home-clawdbot/memory"
+
+def _default_memory_dir() -> str:
+    """Derive Claude Code's per-project memory dir from $HOME.
+
+    Claude Code stores memory under ~/.claude/projects/<slug>/memory where
+    <slug> is the user's home directory with each '/' replaced by '-'.
+    e.g. /home/alice -> -home-alice
+    """
+    home = os.path.expanduser("~")
+    slug = home.replace("/", "-")
+    return f"~/.claude/projects/{slug}/memory"
+
+
+DEFAULT_MEMORY_DIR = _default_memory_dir()
 DEFAULT_HANDOFFS_DIR = "~/.openclaw/workspace/.claude/memory-handoffs"
 DEFAULT_MAX_LINES = 180
 

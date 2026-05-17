@@ -5,10 +5,25 @@ import pytest
 
 from memory_doctor.paths import (
     DEFAULT_MAX_LINES,
+    DEFAULT_MEMORY_DIR,
     PathConfig,
+    _default_memory_dir,
     resolve_paths,
     PathConfigError,
 )
+
+
+def test_default_memory_dir_is_derived_from_home(monkeypatch):
+    # The default should be computed per-user from $HOME, not hardcoded.
+    monkeypatch.setenv("HOME", "/home/alice")
+    assert _default_memory_dir() == "~/.claude/projects/-home-alice/memory"
+    monkeypatch.setenv("HOME", "/home/bob")
+    assert _default_memory_dir() == "~/.claude/projects/-home-bob/memory"
+
+
+def test_default_memory_dir_matches_helper():
+    # The module-level constant must agree with the helper at import time.
+    assert DEFAULT_MEMORY_DIR == _default_memory_dir()
 
 
 def test_resolves_flag_over_env_over_default(tmp_path, monkeypatch):
