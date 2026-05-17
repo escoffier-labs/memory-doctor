@@ -6,7 +6,11 @@ from pathlib import Path
 
 from memory_doctor.parsing import HandoffParseError, ParsedHandoff, parse_handoff
 from memory_doctor.paths import PathConfig
-from memory_doctor.safety import UnsafeTargetError, resolve_card_target
+from memory_doctor.safety import (
+    UnsafeTargetError,
+    atomic_write_text,
+    resolve_card_target,
+)
 
 
 def _process_handoff(
@@ -43,12 +47,14 @@ def _process_handoff(
                 return (f"{src.name}: SKIP - {target.name} exists with different content (use --force)", False)
             msg = f"{src.name}: create-card -> {target.name} (FORCE overwrite)"
             if apply:
-                target.write_text(parsed.content if parsed.content.endswith("\n") else parsed.content + "\n")
+                payload = parsed.content if parsed.content.endswith("\n") else parsed.content + "\n"
+                atomic_write_text(target, payload)
                 shutil.move(str(src), str(handoffs_dir / "processed" / src.name))
             return msg, True
         msg = f"{src.name}: create-card -> {target.name}"
         if apply:
-            target.write_text(parsed.content if parsed.content.endswith("\n") else parsed.content + "\n")
+            payload = parsed.content if parsed.content.endswith("\n") else parsed.content + "\n"
+            atomic_write_text(target, payload)
             shutil.move(str(src), str(handoffs_dir / "processed" / src.name))
         return msg, True
 
@@ -59,7 +65,9 @@ def _process_handoff(
         if apply:
             existing = target.read_text()
             sep = "" if existing.endswith("\n\n") else ("\n" if existing.endswith("\n") else "\n\n")
-            target.write_text(existing + sep + parsed.content + "\n")
+            # Atomic write of the combined result avoids in-place append; a
+            # crash leaves either old content or new, never a torn file.
+            atomic_write_text(target, existing + sep + parsed.content + "\n")
             shutil.move(str(src), str(handoffs_dir / "processed" / src.name))
         return msg, True
 

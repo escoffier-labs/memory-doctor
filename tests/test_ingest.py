@@ -1,4 +1,5 @@
 from pathlib import Path
+from unittest.mock import patch
 
 from tests.conftest import write_handoff
 from memory_doctor.paths import PathConfig
@@ -99,6 +100,36 @@ def test_ingest_autocreates_processed_subdir(memory_dir, tmp_path):
     assert code == 0
     assert (handoffs_dir / "processed").is_dir()
     assert (handoffs_dir / "processed" / "h-fresh.md").exists()
+
+
+def test_ingest_create_uses_atomic_write(memory_dir, handoffs_dir):
+    # create-card must route through atomic_write_text (crash-safe writer),
+    # not a raw target.write_text(...). Asserted via spy on the imported name.
+    write_handoff(handoffs_dir, "atomic-create.md", action="create-card",
+                  target="atomic-card.md", content="atomic body")
+    with patch("memory_doctor.ingest.atomic_write_text") as spy:
+        code = run(cfg(memory_dir, handoffs_dir), apply=True, force=False)
+    assert code == 0
+    assert spy.called
+    # Target path should be inside memory_dir.
+    target_arg = spy.call_args.args[0]
+    assert target_arg == memory_dir / "atomic-card.md"
+
+
+def test_ingest_update_uses_atomic_write(memory_dir, handoffs_dir):
+    # update-card must also route through atomic_write_text.
+    (memory_dir / "growing-atomic.md").write_text("original\n")
+    write_handoff(handoffs_dir, "atomic-update.md", action="update-card",
+                  target="growing-atomic.md", content="appended")
+    with patch("memory_doctor.ingest.atomic_write_text") as spy:
+        code = run(cfg(memory_dir, handoffs_dir), apply=True, force=False)
+    assert code == 0
+    assert spy.called
+    # Payload should include both the existing content and the appended block,
+    # confirming we compute the combined result before writing (no in-place append).
+    payload = spy.call_args.args[1]
+    assert "original" in payload
+    assert "appended" in payload
 
 
 def test_multi_handoff_batch(memory_dir, handoffs_dir):

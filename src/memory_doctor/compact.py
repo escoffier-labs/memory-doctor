@@ -3,35 +3,20 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
-import os
 import re
-import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from memory_doctor.paths import PathConfig
-from memory_doctor.safety import UnsafeTargetError, resolve_card_target
+from memory_doctor.safety import (
+    UnsafeTargetError,
+    atomic_write_text,
+    resolve_card_target,
+)
 
 
 BULLET_RE = re.compile(r"^- \[([^\]]+)\]\(([^)]+)\)\s*(.*)$")
 INDENTED_CONTINUATION_RE = re.compile(r"^\s{2,}\S")
-
-
-def _atomic_write_text(path: Path, content: str) -> None:
-    """Write `content` to `path` atomically via tempfile + os.replace.
-    Same-dir tempfile guarantees the rename is atomic on POSIX filesystems.
-    """
-    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w") as f:
-            f.write(content)
-        os.replace(tmp, path)
-    except Exception:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
 
 
 def _flatten_marker(today: str, flatten: "Flatten") -> str:
@@ -148,7 +133,7 @@ def _apply_flatten(memory_dir: Path, plan: CompactionPlan) -> None:
             + "\n".join(flatten.detail_lines)
             + "\n"
         )
-        _atomic_write_text(target_path, appended)
+        atomic_write_text(target_path, appended)
         applied.append(flatten)
 
     keep: list[str] = []
@@ -160,7 +145,7 @@ def _apply_flatten(memory_dir: Path, plan: CompactionPlan) -> None:
         if idx in skip_indexes:
             continue
         keep.append(line)
-    _atomic_write_text(index_path, "\n".join(keep) + ("\n" if keep else ""))
+    atomic_write_text(index_path, "\n".join(keep) + ("\n" if keep else ""))
 
 
 def run(cfg: PathConfig, *, apply: bool = False) -> int:
