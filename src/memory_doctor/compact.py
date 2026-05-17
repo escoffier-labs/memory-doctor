@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
+import os
 import re
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -12,6 +15,29 @@ from memory_doctor.safety import UnsafeTargetError, resolve_card_target
 
 BULLET_RE = re.compile(r"^- \[([^\]]+)\]\(([^)]+)\)\s*(.*)$")
 INDENTED_CONTINUATION_RE = re.compile(r"^\s{2,}\S")
+
+
+def _atomic_write_text(path: Path, content: str) -> None:
+    """Write `content` to `path` atomically via tempfile + os.replace.
+    Same-dir tempfile guarantees the rename is atomic on POSIX filesystems.
+    """
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(content)
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _flatten_marker(today: str, title: str) -> str:
+    """Stable marker so re-applying the same flatten plan is idempotent."""
+    h = hashlib.sha256(title.encode()).hexdigest()[:8]
+    return f"<!-- compact:{today}:{h} -->"
 
 
 @dataclass(frozen=True)
@@ -89,6 +115,7 @@ def _apply_flatten(memory_dir: Path, plan: CompactionPlan) -> None:
     lines = index_path.read_text().splitlines()
     today = dt.date.today().isoformat()
 
+    applied: list[Flatten] = []
     for flatten in plan.flattens:
         # Defense-in-depth: re-validate target on apply; plan_compaction already
         # filters unsafe entries, but never trust a cached plan with raw paths.
@@ -97,25 +124,32 @@ def _apply_flatten(memory_dir: Path, plan: CompactionPlan) -> None:
         except UnsafeTargetError:
             continue
         existing = target_path.read_text()
+        marker = _flatten_marker(today, flatten.title)
+        if marker in existing:
+            # Already applied for this title/date - skip the topic append but
+            # still drop the detail lines from the index below for consistency.
+            applied.append(flatten)
+            continue
         sep = "" if existing.endswith("\n\n") else ("\n" if existing.endswith("\n") else "\n\n")
         appended = (
-            f"{existing}{sep}## From index ({today})\n\n"
+            f"{existing}{sep}{marker}\n## From index ({today})\n\n"
             f"{flatten.bullet_text.strip()}\n\n"
             + "\n".join(flatten.detail_lines)
             + "\n"
         )
-        target_path.write_text(appended)
+        _atomic_write_text(target_path, appended)
+        applied.append(flatten)
 
     keep: list[str] = []
     skip_indexes: set[int] = set()
-    for flatten in plan.flattens:
+    for flatten in applied:
         for off in range(1, len(flatten.detail_lines) + 1):
             skip_indexes.add(flatten.line_index + off)
     for idx, line in enumerate(lines):
         if idx in skip_indexes:
             continue
         keep.append(line)
-    index_path.write_text("\n".join(keep) + ("\n" if keep else ""))
+    _atomic_write_text(index_path, "\n".join(keep) + ("\n" if keep else ""))
 
 
 def run(cfg: PathConfig, *, apply: bool = False) -> int:

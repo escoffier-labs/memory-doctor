@@ -79,6 +79,33 @@ def test_dry_run_no_side_effects(memory_dir, handoffs_dir):
     assert (memory_dir / "MEMORY.md").read_text() == snapshot
 
 
+def test_apply_is_idempotent_via_marker(memory_dir, handoffs_dir):
+    # Re-applying the same flatten plan must NOT duplicate the appended block.
+    write_card(memory_dir, "topic-i", "original body\n")
+    write_memory_index(memory_dir, [
+        "# Memory Index",
+        "## Section",
+        "- [topic-i](topic-i.md) - first line",
+        "  detail to flatten",
+    ])
+    code = run(cfg(memory_dir, handoffs_dir, max_lines=2), apply=True)
+    assert code == 0
+    after_first = (memory_dir / "topic-i.md").read_text()
+    # Manually re-introduce the same multi-line entry to simulate re-apply.
+    write_memory_index(memory_dir, [
+        "# Memory Index",
+        "## Section",
+        "- [topic-i](topic-i.md) - first line",
+        "  detail to flatten",
+    ])
+    code = run(cfg(memory_dir, handoffs_dir, max_lines=2), apply=True)
+    assert code == 0
+    after_second = (memory_dir / "topic-i.md").read_text()
+    # Marker present exactly once; no duplicated "From index" header.
+    assert after_second.count("<!-- compact:") == 1
+    assert after_second.count("## From index") == 1
+
+
 def test_compact_skips_unsafe_target(memory_dir, handoffs_dir, tmp_path, capsys):
     # MEMORY.md references a path-traversal target. Plan must skip it AND
     # apply must never write outside memory_dir.
