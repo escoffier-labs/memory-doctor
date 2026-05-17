@@ -88,6 +88,19 @@ def test_ingest_rejects_path_traversal_target(memory_dir, handoffs_dir, tmp_path
     assert not (handoffs_dir / "processed" / "evil.md").exists()
 
 
+def test_ingest_autocreates_processed_subdir(memory_dir, tmp_path):
+    # Build a handoffs dir WITHOUT a pre-existing processed/ subdir.
+    handoffs_dir = tmp_path / "handoffs-fresh"
+    handoffs_dir.mkdir()
+    write_handoff(handoffs_dir, "h-fresh.md", action="create-card",
+                  target="fresh.md", content="fresh body")
+    assert not (handoffs_dir / "processed").exists()
+    code = run(cfg(memory_dir, handoffs_dir), apply=True, force=False)
+    assert code == 0
+    assert (handoffs_dir / "processed").is_dir()
+    assert (handoffs_dir / "processed" / "h-fresh.md").exists()
+
+
 def test_multi_handoff_batch(memory_dir, handoffs_dir):
     write_handoff(handoffs_dir, "b-1.md", action="create-card", target="a.md", content="a-body")
     write_handoff(handoffs_dir, "b-2.md", action="create-card", target="b.md", content="b-body")

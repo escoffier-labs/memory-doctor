@@ -67,6 +67,11 @@ def _process_handoff(
 
 
 def run(cfg: PathConfig, *, apply: bool = False, force: bool = False) -> int:
+    # Ensure processed/ exists before any handoff is read so the first --apply
+    # on a fresh inbox does not crash with FileNotFoundError on shutil.move.
+    if apply:
+        (cfg.handoffs_dir / "processed").mkdir(exist_ok=True)
+
     pending = sorted(p for p in cfg.handoffs_dir.glob("*.md"))
     if not pending:
         print("memory-doctor ingest: no pending handoffs")
