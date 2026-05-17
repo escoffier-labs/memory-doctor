@@ -75,6 +75,19 @@ def test_parse_handoff_missing_action_raises(tmp_path: Path):
         parse_handoff(h)
 
 
+def test_parse_handoff_content_keeps_internal_headings(tmp_path):
+    h = tmp_path / "h.md"
+    h.write_text(
+        "## Recommended memory action\ncreate-card\n\n"
+        "## Target card\nfoo.md\n\n"
+        "## Suggested card content\n---\nname: foo\n---\n\n## Section A\nbody A\n\n## Section B\nbody B\n"
+    )
+    parsed = parse_handoff(h)
+    assert "## Section A" in parsed.content
+    assert "## Section B" in parsed.content
+    assert "body B" in parsed.content
+
+
 def test_parse_handoff_multi_paragraph_content(tmp_path: Path):
     h = tmp_path / "h.md"
     h.write_text(

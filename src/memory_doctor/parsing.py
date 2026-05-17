@@ -61,6 +61,21 @@ def _section_lines(text: str, heading: str) -> list[str] | None:
     return text[start:end].splitlines()
 
 
+def _section_lines_to_eof(text: str, heading: str) -> list[str] | None:
+    """Like _section_lines but reads to end-of-file instead of next ## heading.
+
+    Used for the "Suggested card content" section, which by template convention
+    is the LAST section of a handoff file. Card bodies legitimately contain
+    `## ` headings of their own (sub-sections of the card), so the standard
+    "stop at next ##" rule would truncate them.
+    """
+    pattern = re.compile(rf"^##\s+{re.escape(heading)}\s*$", re.IGNORECASE | re.MULTILINE)
+    m = pattern.search(text)
+    if not m:
+        return None
+    return text[m.end():].splitlines()
+
+
 def _first_nonblank_line(lines: list[str]) -> str:
     for line in lines:
         s = line.strip().strip("`").strip("'\"")
@@ -87,7 +102,9 @@ def parse_handoff(path: Path) -> ParsedHandoff:
         raw_target = raw_target + ".md"
     target = raw_target
 
-    content_lines = _section_lines(text, "Suggested card content") or []
+    # Suggested card content is the FINAL section of the template; parse to EOF
+    # so embedded `## ` sub-headings inside the card body are preserved.
+    content_lines = _section_lines_to_eof(text, "Suggested card content") or []
     content = "\n".join(content_lines).strip()
 
     if action in {"create-card", "update-card"}:
