@@ -3,10 +3,11 @@ from __future__ import annotations
 
 import datetime as dt
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from memory_doctor.paths import PathConfig
+from memory_doctor.safety import UnsafeTargetError, resolve_card_target
 
 
 BULLET_RE = re.compile(r"^- \[([^\]]+)\]\(([^)]+)\)\s*(.*)$")
@@ -28,6 +29,7 @@ class CompactionPlan:
     flattens: list[Flatten]
     missing_targets: list[str]
     projected_lines: int
+    unsafe_targets: list[str] = field(default_factory=list)
 
 
 def plan_compaction(memory_dir: Path, max_lines: int) -> CompactionPlan:
@@ -35,6 +37,7 @@ def plan_compaction(memory_dir: Path, max_lines: int) -> CompactionPlan:
     lines = index_path.read_text().splitlines() if index_path.exists() else []
     flattens: list[Flatten] = []
     missing: list[str] = []
+    unsafe: list[str] = []
     i = 0
     while i < len(lines):
         line = lines[i]
@@ -52,6 +55,14 @@ def plan_compaction(memory_dir: Path, max_lines: int) -> CompactionPlan:
             details.append(lines[j].strip())
             j += 1
         if details:
+            # Reject targets that would escape memory_dir or are otherwise unsafe;
+            # exclude them from the flatten plan entirely so we never write outside.
+            try:
+                resolve_card_target(memory_dir, target_name)
+            except UnsafeTargetError:
+                unsafe.append(target_name)
+                i = j
+                continue
             flattens.append(Flatten(
                 line_index=i,
                 title=title,
@@ -69,6 +80,7 @@ def plan_compaction(memory_dir: Path, max_lines: int) -> CompactionPlan:
         flattens=flattens,
         missing_targets=missing,
         projected_lines=projected,
+        unsafe_targets=unsafe,
     )
 
 
@@ -78,7 +90,12 @@ def _apply_flatten(memory_dir: Path, plan: CompactionPlan) -> None:
     today = dt.date.today().isoformat()
 
     for flatten in plan.flattens:
-        target_path = memory_dir / flatten.target_name
+        # Defense-in-depth: re-validate target on apply; plan_compaction already
+        # filters unsafe entries, but never trust a cached plan with raw paths.
+        try:
+            target_path = resolve_card_target(memory_dir, flatten.target_name)
+        except UnsafeTargetError:
+            continue
         existing = target_path.read_text()
         sep = "" if existing.endswith("\n\n") else ("\n" if existing.endswith("\n") else "\n\n")
         appended = (
@@ -114,6 +131,11 @@ def run(cfg: PathConfig, *, apply: bool = False) -> int:
 
     mode = "APPLY" if apply else "dry-run"
     print(f"memory-doctor compact ({mode}): MEMORY.md {plan.original_lines} -> ~{plan.projected_lines} lines")
+
+    if plan.unsafe_targets:
+        print("\nWARNING: skipping entries with unsafe targets (path traversal / escapes memory dir):")
+        for t in plan.unsafe_targets:
+            print(f"  - {t}")
 
     if plan.missing_targets:
         print("\nERROR: target topic files missing for some flatten candidates:")

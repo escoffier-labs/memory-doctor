@@ -6,6 +6,7 @@ from pathlib import Path
 
 from memory_doctor.parsing import HandoffParseError, ParsedHandoff, parse_handoff
 from memory_doctor.paths import PathConfig
+from memory_doctor.safety import UnsafeTargetError, resolve_card_target
 
 
 def _process_handoff(
@@ -25,7 +26,10 @@ def _process_handoff(
             shutil.move(str(src), str(handoffs_dir / "processed" / src.name))
         return msg, True
 
-    target = memory_dir / parsed.target
+    try:
+        target = resolve_card_target(memory_dir, parsed.target)
+    except UnsafeTargetError as e:
+        return (f"{src.name}: SKIP - unsafe target {parsed.target!r}: {e}", False)
 
     if parsed.action == "create-card":
         if target.exists():

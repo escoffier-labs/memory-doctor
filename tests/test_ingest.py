@@ -73,6 +73,21 @@ def test_dry_run_no_side_effects(memory_dir, handoffs_dir):
     assert not (handoffs_dir / "processed" / "h-7.md").exists()
 
 
+def test_ingest_rejects_path_traversal_target(memory_dir, handoffs_dir, tmp_path):
+    # Pre-create a sentinel file outside memory_dir that the malicious handoff
+    # would clobber if traversal were not blocked.
+    outside = tmp_path / "outside.md"
+    outside.write_text("untouched")
+    write_handoff(handoffs_dir, "evil.md", action="create-card",
+                  target="../outside.md", content="malicious payload")
+    code = run(cfg(memory_dir, handoffs_dir), apply=True, force=True)
+    assert code == 1
+    # Sentinel untouched, handoff still in inbox (not promoted to processed).
+    assert outside.read_text() == "untouched"
+    assert (handoffs_dir / "evil.md").exists()
+    assert not (handoffs_dir / "processed" / "evil.md").exists()
+
+
 def test_multi_handoff_batch(memory_dir, handoffs_dir):
     write_handoff(handoffs_dir, "b-1.md", action="create-card", target="a.md", content="a-body")
     write_handoff(handoffs_dir, "b-2.md", action="create-card", target="b.md", content="b-body")

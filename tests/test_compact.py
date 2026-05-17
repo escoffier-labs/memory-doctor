@@ -79,6 +79,28 @@ def test_dry_run_no_side_effects(memory_dir, handoffs_dir):
     assert (memory_dir / "MEMORY.md").read_text() == snapshot
 
 
+def test_compact_skips_unsafe_target(memory_dir, handoffs_dir, tmp_path, capsys):
+    # MEMORY.md references a path-traversal target. Plan must skip it AND
+    # apply must never write outside memory_dir.
+    outside = tmp_path / "outside.md"
+    outside.write_text("untouched")
+    write_memory_index(memory_dir, [
+        "# Memory Index",
+        "## Section",
+        "- [evil](../outside.md) - bullet hook",
+        "  detail line 1",
+        "  detail line 2",
+    ])
+    plan = plan_compaction(memory_dir, max_lines=2)
+    assert "../outside.md" in plan.unsafe_targets
+    assert all(f.target_name != "../outside.md" for f in plan.flattens)
+    code = run(cfg(memory_dir, handoffs_dir, max_lines=2), apply=True)
+    # No safe flatten candidates remain, but the unsafe one is reported.
+    assert outside.read_text() == "untouched"
+    out = capsys.readouterr().out
+    assert "unsafe targets" in out.lower()
+
+
 def test_topic_file_append_shape(memory_dir, handoffs_dir):
     write_card(memory_dir, "topic-e", "original")
     write_memory_index(memory_dir, [
