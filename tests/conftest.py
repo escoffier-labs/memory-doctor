@@ -1,6 +1,7 @@
 """Test fixtures: hermetic tmp_path-based memory + handoffs dirs."""
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 from typing import Iterable
 
@@ -13,6 +14,34 @@ def memory_dir(tmp_path: Path) -> Path:
     d = tmp_path / "memory"
     d.mkdir()
     return d
+
+
+@pytest.fixture
+def git_memory_dir(memory_dir):
+    """memory_dir + initialized git repo with an initial commit baseline.
+
+    Lets tests exercise commit paths without re-running git init each test.
+    Uses --quiet to keep test output clean.
+    """
+    subprocess.run(["git", "init", "--quiet", "-b", "main", str(memory_dir)], check=True)
+    subprocess.run(
+        ["git", "-C", str(memory_dir), "config", "user.email", "test@example.com"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(memory_dir), "config", "user.name", "Test"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(memory_dir), "config", "commit.gpgsign", "false"],
+        check=True,
+    )
+    subprocess.run(["git", "-C", str(memory_dir), "add", "-A"], check=True)
+    subprocess.run(
+        ["git", "-C", str(memory_dir), "commit", "--quiet", "--allow-empty", "-m", "baseline"],
+        check=True,
+    )
+    return memory_dir
 
 
 @pytest.fixture
