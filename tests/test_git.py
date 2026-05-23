@@ -198,3 +198,61 @@ def test_commit_run_only_stages_listed_files(git_memory_dir):
     ).stdout
     assert "card-other.md" in status
     assert "card-target.md" not in status  # already committed
+
+
+from memory_doctor.git import rollback_files
+
+
+def test_commit_run_hook_failure_leaves_staged(git_memory_dir):
+    # Install a failing pre-commit hook.
+    hooks_dir = git_memory_dir / ".git" / "hooks"
+    hook = hooks_dir / "pre-commit"
+    hook.write_text("#!/bin/sh\necho 'pre-commit hook failed'\nexit 1\n")
+    hook.chmod(0o755)
+
+    f = git_memory_dir / "card-hook.md"
+    f.write_text("hook\n")
+    result = commit_run(
+        memory_dir=git_memory_dir,
+        files=[f],
+        subject="memory-doctor ingest: 1 handoff promoted",
+        body="- card-hook.md",
+        author=None,
+    )
+    assert result.error_kind == "hook"
+    assert result.sha is None
+    # File should remain on disk + staged (per spec section 4: don't auto-revert).
+    assert f.exists()
+    status = subprocess.run(
+        ["git", "-C", str(git_memory_dir), "status", "--porcelain"],
+        capture_output=True, text=True, check=True,
+    ).stdout
+    # Either "A " (added/staged) or "AM" if there were modifications.
+    assert "card-hook.md" in status
+    assert status.lstrip().startswith("A")
+
+
+def test_rollback_files_reverts_modified(git_memory_dir):
+    f = git_memory_dir / "card-z.md"
+    f.write_text("original\n")
+    subprocess.run(["git", "-C", str(git_memory_dir), "add", str(f)], check=True)
+    subprocess.run(
+        ["git", "-C", str(git_memory_dir), "commit", "--quiet", "-m", "add z"],
+        check=True,
+    )
+    f.write_text("modified\n")
+    rollback_files(git_memory_dir, [f])
+    assert f.read_text() == "original\n"
+
+
+def test_rollback_files_deletes_untracked(git_memory_dir):
+    f = git_memory_dir / "card-new.md"
+    f.write_text("new\n")
+    rollback_files(git_memory_dir, [f])
+    assert not f.exists()
+
+
+def test_rollback_files_safe_on_missing_file(git_memory_dir):
+    # A file that was never written should silently no-op.
+    rollback_files(git_memory_dir, [git_memory_dir / "never-existed.md"])
+    # No assertion needed; just verify no exception.
