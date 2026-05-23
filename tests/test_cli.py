@@ -46,3 +46,30 @@ def test_ingest_dry_run_default(memory_dir, handoffs_dir):
     assert r.returncode == 0
     assert not (memory_dir / "x.md").exists()
     assert (handoffs_dir / "h.md").exists()
+
+
+def test_init_git_verb_dispatches(memory_dir, handoffs_dir, monkeypatch):
+    monkeypatch.setenv("MEMORY_DOCTOR_MEMORY_DIR", str(memory_dir))
+    monkeypatch.setenv("MEMORY_DOCTOR_HANDOFFS_DIR", str(handoffs_dir))
+    from memory_doctor.cli import main
+    rc = main(["init-git"])
+    assert rc == 0
+    assert (memory_dir / ".git").is_dir()
+
+
+def test_ingest_commit_flag_parses(memory_dir, handoffs_dir, monkeypatch):
+    monkeypatch.setenv("MEMORY_DOCTOR_MEMORY_DIR", str(memory_dir))
+    monkeypatch.setenv("MEMORY_DOCTOR_HANDOFFS_DIR", str(handoffs_dir))
+    from memory_doctor.cli import build_parser
+    parser = build_parser()
+    args = parser.parse_args(["ingest", "--apply", "--commit", "--commit-author", "X <x@y.z>"])
+    assert args.commit is True
+    assert args.no_commit is False
+    assert args.commit_author == "X <x@y.z>"
+
+
+def test_compact_no_commit_flag_overrides_env(memory_dir, handoffs_dir):
+    from memory_doctor.cli import build_parser
+    parser = build_parser()
+    args = parser.parse_args(["compact", "--apply", "--no-commit"])
+    assert args.no_commit is True

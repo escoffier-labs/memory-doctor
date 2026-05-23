@@ -148,7 +148,7 @@ def _apply_flatten(memory_dir: Path, plan: CompactionPlan) -> None:
     atomic_write_text(index_path, "\n".join(keep) + ("\n" if keep else ""))
 
 
-def run(cfg: PathConfig, *, apply: bool = False) -> int:
+def run(cfg: PathConfig, *, apply: bool = False, commit: bool = False, commit_author: str | None = None) -> int:
     index_path = cfg.memory_dir / "MEMORY.md"
     if not index_path.exists():
         print(f"memory-doctor compact: {index_path} does not exist")

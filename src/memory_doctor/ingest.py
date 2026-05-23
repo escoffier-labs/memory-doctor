@@ -74,7 +74,7 @@ def _process_handoff(
     return (f"{src.name}: unknown action {parsed.action!r}", False)
 
 
-def run(cfg: PathConfig, *, apply: bool = False, force: bool = False) -> int:
+def run(cfg: PathConfig, *, apply: bool = False, force: bool = False, commit: bool = False, commit_author: str | None = None) -> int:
     # Ensure processed/ exists before any handoff is read so the first --apply
     # on a fresh inbox does not crash with FileNotFoundError on shutil.move.
     if apply:
