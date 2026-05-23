@@ -7,6 +7,7 @@ typed helpers in this module. No exceptions bubble up from subprocess.
 from __future__ import annotations
 
 import subprocess
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
@@ -89,3 +90,90 @@ def files_have_uncommitted_changes(
             status = "modified, not staged"
         dirty.append((files_by_rel[path], status))
     return dirty
+
+
+@dataclass
+class CommitResult:
+    """Outcome of a commit_run() invocation.
+
+    On success: sha is set, error_kind is None.
+    On failure: error_kind is one of {"add", "hook", "commit-other"};
+    sha is None; error_message has the git stderr; staged_files lists
+    what was already staged at the point of failure.
+    """
+    sha: str | None = None
+    staged_files: list[Path] = field(default_factory=list)
+    error_kind: str | None = None
+    error_message: str | None = None
+
+
+def commit_run(
+    *,
+    memory_dir: Path,
+    files: list[Path],
+    subject: str,
+    body: str,
+    author: str | None,
+) -> CommitResult:
+    """Stage `files` and create a commit with the given subject/body.
+
+    Uses `git commit -- <files>` pathspec form so other staged content is
+    not pulled into our commit. Author override via -c user.name/email.
+    Never passes --no-verify; pre-commit hooks run normally.
+    """
+    if not files:
+        return CommitResult()
+
+    rel = [str(f.resolve().relative_to(memory_dir.resolve())) for f in files]
+
+    add_result = subprocess.run(
+        ["git", "-C", str(memory_dir), "add", "--", *rel],
+        capture_output=True, text=True, check=False,
+    )
+    if add_result.returncode != 0:
+        return CommitResult(
+            error_kind="add",
+            error_message=add_result.stderr.strip() or add_result.stdout.strip(),
+        )
+
+    cmd = ["git", "-C", str(memory_dir)]
+    if author:
+        name, email = _parse_author(author)
+        cmd += ["-c", f"user.name={name}", "-c", f"user.email={email}"]
+    cmd += ["commit", "--quiet", "-m", subject, "-m", body, "--", *rel]
+
+    commit_result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    if commit_result.returncode != 0:
+        stderr = commit_result.stderr.lower()
+        # Pre-commit hook failures vary by hook; git itself emits one of
+        # these phrases when a hook exits non-zero. Any other failure is
+        # bucketed as commit-other.
+        hook_markers = ("pre-commit hook failed", "hook declined", "hook exited")
+        if any(marker in stderr for marker in hook_markers):
+            error_kind = "hook"
+        else:
+            error_kind = "commit-other"
+        return CommitResult(
+            staged_files=files,
+            error_kind=error_kind,
+            error_message=commit_result.stderr.strip() or commit_result.stdout.strip(),
+        )
+
+    sha_result = subprocess.run(
+        ["git", "-C", str(memory_dir), "rev-parse", "--short=12", "HEAD"],
+        capture_output=True, text=True, check=False,
+    )
+    sha = sha_result.stdout.strip() if sha_result.returncode == 0 else None
+    return CommitResult(sha=sha, staged_files=files)
+
+
+def _parse_author(spec: str) -> tuple[str, str]:
+    """Parse 'Name <email>' into (name, email). Raises ValueError on bad format."""
+    if "<" not in spec or not spec.rstrip().endswith(">"):
+        raise ValueError(f"author must be in 'Name <email>' format, got: {spec!r}")
+    name_part, email_part = spec.split("<", 1)
+    name = name_part.strip()
+    email = email_part.rstrip(">").strip()
+    if not name or not email:
+        raise ValueError(f"author missing name or email: {spec!r}")
+    return name, email

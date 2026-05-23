@@ -112,3 +112,89 @@ def test_files_have_uncommitted_changes_ignores_other_files(git_memory_dir):
     )
     other.write_text("other modified\n")
     assert files_have_uncommitted_changes(git_memory_dir, [target]) == []
+
+
+from memory_doctor.git import CommitResult, commit_run
+
+
+def test_commit_run_happy_path(git_memory_dir):
+    f = git_memory_dir / "card-new.md"
+    f.write_text("hello\n")
+    result = commit_run(
+        memory_dir=git_memory_dir,
+        files=[f],
+        subject="memory-doctor ingest: 1 handoff promoted",
+        body="- card-new.md (create-card)",
+        author=None,
+    )
+    assert isinstance(result, CommitResult)
+    assert result.error_kind is None
+    assert result.sha is not None
+    assert len(result.sha) >= 7
+
+    log = subprocess.run(
+        ["git", "-C", str(git_memory_dir), "log", "-1", "--format=%s%n%n%b"],
+        capture_output=True, text=True, check=True,
+    ).stdout
+    assert "memory-doctor ingest: 1 handoff promoted" in log
+    assert "- card-new.md (create-card)" in log
+
+
+def test_commit_run_with_author_override(git_memory_dir):
+    f = git_memory_dir / "card-x.md"
+    f.write_text("x\n")
+    result = commit_run(
+        memory_dir=git_memory_dir,
+        files=[f],
+        subject="memory-doctor ingest: 1 handoff promoted",
+        body="- card-x.md",
+        author="Bob <bob@example.com>",
+    )
+    assert result.error_kind is None
+    log = subprocess.run(
+        ["git", "-C", str(git_memory_dir), "log", "-1", "--format=%an <%ae>"],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    assert log == "Bob <bob@example.com>"
+
+
+def test_commit_run_no_ai_trailers(git_memory_dir):
+    f = git_memory_dir / "card-y.md"
+    f.write_text("y\n")
+    commit_run(
+        memory_dir=git_memory_dir,
+        files=[f],
+        subject="memory-doctor compact: 1 entry flattened",
+        body="- card-y.md (appended)",
+        author=None,
+    )
+    log = subprocess.run(
+        ["git", "-C", str(git_memory_dir), "log", "-1", "--format=%B"],
+        capture_output=True, text=True, check=True,
+    ).stdout
+    # Global commit-hygiene rule: no AI authorship trailers anywhere.
+    assert "Co-Authored-By" not in log
+    assert "Generated with" not in log
+    assert "Created with" not in log
+
+
+def test_commit_run_only_stages_listed_files(git_memory_dir):
+    # Other unrelated unstaged work must not get pulled into our commit.
+    target = git_memory_dir / "card-target.md"
+    target.write_text("target\n")
+    other = git_memory_dir / "card-other.md"
+    other.write_text("other\n")
+    commit_run(
+        memory_dir=git_memory_dir,
+        files=[target],
+        subject="memory-doctor ingest: 1 handoff promoted",
+        body="- card-target.md",
+        author=None,
+    )
+    # other.md should still be untracked.
+    status = subprocess.run(
+        ["git", "-C", str(git_memory_dir), "status", "--porcelain"],
+        capture_output=True, text=True, check=True,
+    ).stdout
+    assert "card-other.md" in status
+    assert "card-target.md" not in status  # already committed
