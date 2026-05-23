@@ -45,3 +45,47 @@ def working_tree_sane(memory_dir: Path) -> tuple[bool, str]:
     if (git_dir / "BISECT_LOG").exists():
         return False, "bisect in progress"
     return True, ""
+
+
+def files_have_uncommitted_changes(
+    memory_dir: Path, files: list[Path]
+) -> list[tuple[Path, str]]:
+    """Return (file, status_word) pairs for files with uncommitted changes.
+
+    Empty list = all clean. status_word is human-readable
+    ('modified', 'untracked', 'staged') and surfaces directly in the CLI error.
+    """
+    if not files:
+        return []
+    rel = [str(f.resolve().relative_to(memory_dir.resolve())) for f in files]
+    cmd = ["git", "-C", str(memory_dir), "status", "--porcelain", "--", *rel]
+    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        # git status against a path inside an uninitialized repo would have
+        # been caught upstream; treat unknown failure as "no dirty files
+        # detected" rather than crash. The caller's is_git_repo() check is
+        # the authoritative gate.
+        return []
+
+    dirty: list[tuple[Path, str]] = []
+    files_by_rel = {str(f.resolve().relative_to(memory_dir.resolve())): f for f in files}
+    for line in result.stdout.splitlines():
+        if len(line) < 4:
+            continue
+        code = line[:2]
+        path = line[3:].strip()
+        # Handle quoted paths from git status (paths with spaces or special chars).
+        if path.startswith('"') and path.endswith('"'):
+            path = path[1:-1]
+        if path not in files_by_rel:
+            continue
+        if code == "??":
+            status = "untracked"
+        elif code[0] != " " and code[1] != " ":
+            status = "modified, staged"
+        elif code[0] != " ":
+            status = "staged"
+        else:
+            status = "modified, not staged"
+        dirty.append((files_by_rel[path], status))
+    return dirty

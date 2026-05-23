@@ -58,3 +58,57 @@ def test_working_tree_sane_false_during_bisect(git_memory_dir):
     ok, reason = working_tree_sane(git_memory_dir)
     assert ok is False
     assert "bisect" in reason.lower()
+
+
+from memory_doctor.git import files_have_uncommitted_changes
+
+
+def test_files_have_uncommitted_changes_clean(git_memory_dir):
+    # Create + commit a file, then check it.
+    f = git_memory_dir / "card-a.md"
+    f.write_text("a\n")
+    subprocess.run(["git", "-C", str(git_memory_dir), "add", str(f)], check=True)
+    subprocess.run(
+        ["git", "-C", str(git_memory_dir), "commit", "--quiet", "-m", "add a"],
+        check=True,
+    )
+    assert files_have_uncommitted_changes(git_memory_dir, [f]) == []
+
+
+def test_files_have_uncommitted_changes_modified(git_memory_dir):
+    f = git_memory_dir / "card-a.md"
+    f.write_text("a\n")
+    subprocess.run(["git", "-C", str(git_memory_dir), "add", str(f)], check=True)
+    subprocess.run(
+        ["git", "-C", str(git_memory_dir), "commit", "--quiet", "-m", "add a"],
+        check=True,
+    )
+    f.write_text("a modified\n")
+    dirty = files_have_uncommitted_changes(git_memory_dir, [f])
+    assert len(dirty) == 1
+    assert dirty[0][0] == f
+    assert "modified" in dirty[0][1].lower()
+
+
+def test_files_have_uncommitted_changes_untracked(git_memory_dir):
+    f = git_memory_dir / "card-new.md"
+    f.write_text("new\n")
+    dirty = files_have_uncommitted_changes(git_memory_dir, [f])
+    assert len(dirty) == 1
+    assert dirty[0][0] == f
+    assert "untracked" in dirty[0][1].lower()
+
+
+def test_files_have_uncommitted_changes_ignores_other_files(git_memory_dir):
+    # Modifying a file we DON'T pass in should not show up.
+    other = git_memory_dir / "other.md"
+    other.write_text("other\n")
+    target = git_memory_dir / "card-target.md"
+    target.write_text("target\n")
+    subprocess.run(["git", "-C", str(git_memory_dir), "add", "-A"], check=True)
+    subprocess.run(
+        ["git", "-C", str(git_memory_dir), "commit", "--quiet", "-m", "baseline2"],
+        check=True,
+    )
+    other.write_text("other modified\n")
+    assert files_have_uncommitted_changes(git_memory_dir, [target]) == []
