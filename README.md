@@ -27,6 +27,17 @@ pipx install .
 
 Requires Python 3.10+. No runtime dependencies beyond stdlib.
 
+## Development
+
+Install test dependencies and run the suite:
+
+```bash
+python3 -m pip install -e '.[dev]'
+python3 -m pytest -q
+```
+
+The repo config points pytest at `src/`, so tests also run from a plain checkout without an editable install as long as pytest is available.
+
 ## Configuration
 
 | What | Flag | Env | Default |
@@ -96,6 +107,8 @@ memory-doctor ingest: 3 handoffs promoted
 No `Co-Authored-By` or `Generated with` trailers; subject already identifies the tool.
 
 `--commit` without `--apply` is a no-op and exits 0 (friendly for experimentation).
+
+If git rejects the commit after writes succeed, for example because a hook fails, memory-doctor leaves the touched files staged and exits non-zero. Review the staged diff, fix the hook failure, then commit or unstage manually.
 
 ## Examples
 

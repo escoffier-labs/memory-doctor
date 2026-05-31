@@ -1,6 +1,8 @@
 import json
+import os
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -8,8 +10,14 @@ from tests.conftest import write_card, write_handoff, write_memory_index
 
 
 def run_cli(args, env=None):
+    child_env = os.environ.copy()
+    if env:
+        child_env.update(env)
+    src_path = str(Path(__file__).resolve().parents[1] / "src")
+    existing = child_env.get("PYTHONPATH")
+    child_env["PYTHONPATH"] = src_path if not existing else os.pathsep.join([src_path, existing])
     cmd = [sys.executable, "-m", "memory_doctor.cli"] + args
-    return subprocess.run(cmd, capture_output=True, text=True, env=env)
+    return subprocess.run(cmd, capture_output=True, text=True, env=child_env)
 
 
 def test_status_default_dispatches(memory_dir, handoffs_dir):

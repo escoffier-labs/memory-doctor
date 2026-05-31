@@ -31,5 +31,8 @@ memory-doctor = "memory_doctor.cli:main"
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
 
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/memory_doctor"]
