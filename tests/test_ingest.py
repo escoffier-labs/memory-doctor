@@ -1,3 +1,4 @@
+import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
@@ -186,3 +187,26 @@ def test_ingest_commit_refuses_when_not_git_repo(memory_dir, handoffs_dir):
     assert rc == 2
     # File should not have been written.
     assert not (memory_dir / "card-norepo.md").exists()
+
+
+def test_ingest_commit_invalid_author_refuses_before_writes(git_memory_dir, handoffs_dir):
+    handoff = handoffs_dir / "h-invalid-author.md"
+    handoff.write_text(
+        "# Handoff\n\n"
+        "## Recommended memory action\ncreate-card\n\n"
+        "## Target card\ncard-invalid-author.md\n\n"
+        "## Suggested card content\nbody\n"
+    )
+    from memory_doctor.ingest import run as ingest_run
+    from memory_doctor.paths import PathConfig
+    cfg = PathConfig(memory_dir=git_memory_dir, handoffs_dir=handoffs_dir, max_lines=180)
+    rc = ingest_run(cfg, apply=True, commit=True, commit_author="bad-author")
+    assert rc == 2
+    assert not (git_memory_dir / "card-invalid-author.md").exists()
+    assert handoff.exists()
+    assert not (handoffs_dir / "processed" / "h-invalid-author.md").exists()
+    status = subprocess.run(
+        ["git", "-C", str(git_memory_dir), "status", "--porcelain"],
+        capture_output=True, text=True, check=True,
+    ).stdout
+    assert status == ""

@@ -124,6 +124,14 @@ def commit_run(
     if not files:
         return CommitResult()
 
+    if author:
+        try:
+            name, email = _parse_author(author)
+        except ValueError as e:
+            return CommitResult(error_kind="author", error_message=str(e))
+    else:
+        name = email = None
+
     rel = [str(f.resolve().relative_to(memory_dir.resolve())) for f in files]
 
     add_result = subprocess.run(
@@ -137,8 +145,7 @@ def commit_run(
         )
 
     cmd = ["git", "-C", str(memory_dir)]
-    if author:
-        name, email = _parse_author(author)
+    if name and email:
         cmd += ["-c", f"user.name={name}", "-c", f"user.email={email}"]
     cmd += ["commit", "--quiet", "-m", subject, "-m", body, "--", *rel]
 
@@ -177,6 +184,17 @@ def _parse_author(spec: str) -> tuple[str, str]:
     if not name or not email:
         raise ValueError(f"author missing name or email: {spec!r}")
     return name, email
+
+
+def validate_author_format(author: str | None) -> str | None:
+    """Return an error message when author is not in 'Name <email>' format."""
+    if not author:
+        return None
+    try:
+        _parse_author(author)
+    except ValueError as e:
+        return str(e)
+    return None
 
 
 def rollback_files(memory_dir: Path, files: list[Path]) -> None:

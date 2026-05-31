@@ -65,6 +65,23 @@ def test_max_lines_from_env(tmp_path, monkeypatch):
     assert cfg.max_lines == 100
 
 
+def test_invalid_max_lines_from_env_raises(tmp_path, monkeypatch):
+    monkeypatch.setenv("MEMORY_DOCTOR_MAX_LINES", "abc")
+    a = tmp_path / "a"; a.mkdir()
+    b = tmp_path / "b"; b.mkdir()
+    with pytest.raises(PathConfigError) as exc:
+        resolve_paths(memory_dir=str(a), handoffs_dir=str(b), max_lines=None)
+    assert "MEMORY_DOCTOR_MAX_LINES" in str(exc.value)
+
+
+def test_non_positive_max_lines_raises(tmp_path):
+    a = tmp_path / "a"; a.mkdir()
+    b = tmp_path / "b"; b.mkdir()
+    with pytest.raises(PathConfigError) as exc:
+        resolve_paths(memory_dir=str(a), handoffs_dir=str(b), max_lines=0)
+    assert "greater than 0" in str(exc.value)
+
+
 def test_tilde_expansion(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     a = tmp_path / "memory"; a.mkdir()

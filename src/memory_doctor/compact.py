@@ -160,6 +160,7 @@ def run(
         commit_run,
         files_have_uncommitted_changes,
         is_git_repo,
+        validate_author_format,
         working_tree_sane,
     )
 
@@ -207,6 +208,14 @@ def run(
         return 0
 
     if commit:
+        author_error = validate_author_format(commit_author)
+        if author_error:
+            print(
+                f"memory-doctor: invalid --commit-author: {author_error}\n"
+                f"  fix: use `--commit-author \"Name <email>\"`",
+                file=sys.stderr,
+            )
+            return 2
         if not is_git_repo(cfg.memory_dir):
             print(
                 f"memory-doctor: --commit requires the memory dir to be a git repo\n"

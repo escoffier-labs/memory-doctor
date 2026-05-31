@@ -25,6 +25,10 @@ def git_memory_dir(memory_dir):
     """
     subprocess.run(["git", "init", "--quiet", "-b", "main", str(memory_dir)], check=True)
     subprocess.run(
+        ["git", "-C", str(memory_dir), "config", "core.hooksPath", str(memory_dir / ".git" / "hooks")],
+        check=True,
+    )
+    subprocess.run(
         ["git", "-C", str(memory_dir), "config", "user.email", "test@example.com"],
         check=True,
     )

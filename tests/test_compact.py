@@ -240,3 +240,37 @@ def test_compact_commit_skipped_when_no_changes(git_memory_dir, handoffs_dir):
         capture_output=True, text=True, check=True,
     ).stdout.strip()
     assert after_count == baseline_count
+
+
+def test_compact_commit_invalid_author_refuses_before_writes(git_memory_dir, handoffs_dir):
+    import subprocess
+    topic = git_memory_dir / "topic-author.md"
+    topic.write_text("# topic-author\n\nbody\n")
+    index = git_memory_dir / "MEMORY.md"
+    index.write_text(
+        "# Memory Index\n\n"
+        "## Section\n"
+        "- [topic-author](topic-author.md) hook\n"
+        "  detail-line-1\n"
+        "  detail-line-2\n"
+    )
+    subprocess.run(["git", "-C", str(git_memory_dir), "add", "-A"], check=True)
+    subprocess.run(
+        ["git", "-C", str(git_memory_dir), "commit", "--quiet", "-m", "seed compact author case"],
+        check=True,
+    )
+
+    before_index = index.read_text()
+    before_topic = topic.read_text()
+    from memory_doctor.compact import run as compact_run
+    from memory_doctor.paths import PathConfig
+    cfg = PathConfig(memory_dir=git_memory_dir, handoffs_dir=handoffs_dir, max_lines=2)
+    rc = compact_run(cfg, apply=True, commit=True, commit_author="bad-author")
+    assert rc == 2
+    assert index.read_text() == before_index
+    assert topic.read_text() == before_topic
+    status = subprocess.run(
+        ["git", "-C", str(git_memory_dir), "status", "--porcelain"],
+        capture_output=True, text=True, check=True,
+    ).stdout
+    assert status == ""

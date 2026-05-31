@@ -9,6 +9,7 @@ from memory_doctor.git import (
     commit_run,
     files_have_uncommitted_changes,
     is_git_repo,
+    validate_author_format,
     working_tree_sane,
 )
 from memory_doctor.parsing import HandoffParseError, ParsedHandoff, parse_handoff
@@ -84,12 +85,25 @@ def _process_handoff(
     return (f"{src.name}: unknown action {parsed.action!r}", False)
 
 
-def _preflight_for_commit(memory_dir: Path, planned_targets: list[Path]) -> int:
+def _preflight_for_commit(
+    memory_dir: Path,
+    planned_targets: list[Path],
+    commit_author: str | None,
+) -> int:
     """Run the three pre-flight checks from the spec. 0 = ok, 2 = abort.
 
     Called BEFORE any file write when --commit is set, so a failure leaves
     the on-disk state untouched.
     """
+    author_error = validate_author_format(commit_author)
+    if author_error:
+        print(
+            f"memory-doctor: invalid --commit-author: {author_error}\n"
+            f"  fix: use `--commit-author \"Name <email>\"`",
+            file=sys.stderr,
+        )
+        return 2
+
     if not is_git_repo(memory_dir):
         print(
             f"memory-doctor: --commit requires the memory dir to be a git repo\n"
@@ -170,7 +184,7 @@ def run(
 
     if apply and commit:
         planned = _plan_targets(pending, cfg.memory_dir)
-        rc = _preflight_for_commit(cfg.memory_dir, planned)
+        rc = _preflight_for_commit(cfg.memory_dir, planned, commit_author)
         if rc != 0:
             return rc
 
