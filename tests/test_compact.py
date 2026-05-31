@@ -165,3 +165,112 @@ def test_topic_file_append_shape(memory_dir, handoffs_dir):
     run(cfg(memory_dir, handoffs_dir, max_lines=1), apply=True)
     appended = (memory_dir / "topic-e.md").read_text()
     assert "## From index" in appended
+
+
+def test_compact_commit_creates_one_commit(git_memory_dir, handoffs_dir):
+    # Seed MEMORY.md over the threshold with a multi-line entry pointing
+    # at a topic file that exists (matches the existing flatten test fixture pattern).
+    topic = git_memory_dir / "topic-a.md"
+    topic.write_text("# topic-a\n\nbody\n")
+    import subprocess
+    subprocess.run(["git", "-C", str(git_memory_dir), "add", "-A"], check=True)
+    subprocess.run(
+        ["git", "-C", str(git_memory_dir), "commit", "--quiet", "-m", "add topic-a"],
+        check=True,
+    )
+
+    # Build a MEMORY.md that exceeds max_lines=5 so compact triggers.
+    index = git_memory_dir / "MEMORY.md"
+    lines = [
+        "# Memory Index",
+        "",
+        "## Section",
+        "- [topic-a](topic-a.md) one-liner hook",
+        "  detail-line-1",
+        "  detail-line-2",
+        "  detail-line-3",
+    ]
+    index.write_text("\n".join(lines) + "\n")
+    subprocess.run(["git", "-C", str(git_memory_dir), "add", str(index)], check=True)
+    subprocess.run(
+        ["git", "-C", str(git_memory_dir), "commit", "--quiet", "-m", "seed MEMORY.md"],
+        check=True,
+    )
+
+    from memory_doctor.compact import run as compact_run
+    from memory_doctor.paths import PathConfig
+    cfg = PathConfig(memory_dir=git_memory_dir, handoffs_dir=handoffs_dir, max_lines=5)
+    rc = compact_run(cfg, apply=True, commit=True)
+    assert rc == 0
+
+    log = subprocess.run(
+        ["git", "-C", str(git_memory_dir), "log", "--oneline"],
+        capture_output=True, text=True, check=True,
+    ).stdout
+    assert "memory-doctor compact:" in log
+    # Subject should mention the line-count delta.
+    subject = subprocess.run(
+        ["git", "-C", str(git_memory_dir), "log", "-1", "--format=%s"],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    assert "MEMORY.md" in subject and "->" in subject
+
+
+def test_compact_commit_skipped_when_no_changes(git_memory_dir, handoffs_dir):
+    # MEMORY.md under threshold = no flatten = no commit.
+    (git_memory_dir / "MEMORY.md").write_text("# tiny\n")
+    import subprocess
+    subprocess.run(["git", "-C", str(git_memory_dir), "add", "-A"], check=True)
+    subprocess.run(
+        ["git", "-C", str(git_memory_dir), "commit", "--quiet", "-m", "tiny memory"],
+        check=True,
+    )
+    baseline_count = subprocess.run(
+        ["git", "-C", str(git_memory_dir), "rev-list", "--count", "HEAD"],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+
+    from memory_doctor.compact import run as compact_run
+    from memory_doctor.paths import PathConfig
+    cfg = PathConfig(memory_dir=git_memory_dir, handoffs_dir=handoffs_dir, max_lines=180)
+    rc = compact_run(cfg, apply=True, commit=True)
+    assert rc == 0
+    after_count = subprocess.run(
+        ["git", "-C", str(git_memory_dir), "rev-list", "--count", "HEAD"],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    assert after_count == baseline_count
+
+
+def test_compact_commit_invalid_author_refuses_before_writes(git_memory_dir, handoffs_dir):
+    import subprocess
+    topic = git_memory_dir / "topic-author.md"
+    topic.write_text("# topic-author\n\nbody\n")
+    index = git_memory_dir / "MEMORY.md"
+    index.write_text(
+        "# Memory Index\n\n"
+        "## Section\n"
+        "- [topic-author](topic-author.md) hook\n"
+        "  detail-line-1\n"
+        "  detail-line-2\n"
+    )
+    subprocess.run(["git", "-C", str(git_memory_dir), "add", "-A"], check=True)
+    subprocess.run(
+        ["git", "-C", str(git_memory_dir), "commit", "--quiet", "-m", "seed compact author case"],
+        check=True,
+    )
+
+    before_index = index.read_text()
+    before_topic = topic.read_text()
+    from memory_doctor.compact import run as compact_run
+    from memory_doctor.paths import PathConfig
+    cfg = PathConfig(memory_dir=git_memory_dir, handoffs_dir=handoffs_dir, max_lines=2)
+    rc = compact_run(cfg, apply=True, commit=True, commit_author="bad-author")
+    assert rc == 2
+    assert index.read_text() == before_index
+    assert topic.read_text() == before_topic
+    status = subprocess.run(
+        ["git", "-C", str(git_memory_dir), "status", "--porcelain"],
+        capture_output=True, text=True, check=True,
+    ).stdout
+    assert status == ""

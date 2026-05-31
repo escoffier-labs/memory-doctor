@@ -8,5 +8,6 @@ dist/
 build/
 .coverage
 .DS_Store
+.claude/memory-handoffs/
 .claude/
 .env

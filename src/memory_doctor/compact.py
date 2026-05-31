@@ -148,7 +148,25 @@ def _apply_flatten(memory_dir: Path, plan: CompactionPlan) -> None:
     atomic_write_text(index_path, "\n".join(keep) + ("\n" if keep else ""))
 
 
-def run(cfg: PathConfig, *, apply: bool = False) -> int:
+def run(
+    cfg: PathConfig,
+    *,
+    apply: bool = False,
+    commit: bool = False,
+    commit_author: str | None = None,
+) -> int:
+    import sys
+    from memory_doctor.git import (
+        commit_run,
+        files_have_uncommitted_changes,
+        is_git_repo,
+        validate_author_format,
+        working_tree_sane,
+    )
+
+    if commit and not apply:
+        print("memory-doctor compact: skipping commit (dry-run; use --apply)")
+
     index_path = cfg.memory_dir / "MEMORY.md"
     if not index_path.exists():
         print(f"memory-doctor compact: {index_path} does not exist")
@@ -186,7 +204,84 @@ def run(cfg: PathConfig, *, apply: bool = False) -> int:
         print(f"\nWARNING: even after flattening, MEMORY.md would be {plan.projected_lines} lines (still over {cfg.max_lines}).")
         print("Manual archival of older entries is required.")
 
-    if apply:
-        _apply_flatten(cfg.memory_dir, plan)
-        print(f"\nApplied. MEMORY.md now {plan.projected_lines} lines.")
-    return 0
+    if not apply:
+        return 0
+
+    if commit:
+        author_error = validate_author_format(commit_author)
+        if author_error:
+            print(
+                f"memory-doctor: invalid --commit-author: {author_error}\n"
+                f"  fix: use `--commit-author \"Name <email>\"`",
+                file=sys.stderr,
+            )
+            return 2
+        if not is_git_repo(cfg.memory_dir):
+            print(
+                f"memory-doctor: --commit requires the memory dir to be a git repo\n"
+                f"  memory dir: {cfg.memory_dir}\n"
+                f"  fix: run `memory-doctor init-git` once, then retry",
+                file=sys.stderr,
+            )
+            return 2
+        ok, reason = working_tree_sane(cfg.memory_dir)
+        if not ok:
+            print(
+                f"memory-doctor: refusing to commit, git is in the middle of a {reason}\n"
+                f"  fix: complete or abort the in-progress operation, then retry",
+                file=sys.stderr,
+            )
+            return 2
+        planned = [cfg.memory_dir / f.target_name for f in plan.flattens] + [index_path]
+        dirty = files_have_uncommitted_changes(cfg.memory_dir, planned)
+        if dirty:
+            print(
+                "memory-doctor: refusing to commit, target files have uncommitted local changes:",
+                file=sys.stderr,
+            )
+            for path, status in dirty:
+                print(f"  - {path.name} ({status})", file=sys.stderr)
+            print("  fix: review with `git diff`, commit/stash/discard, then retry", file=sys.stderr)
+            return 2
+
+    _apply_flatten(cfg.memory_dir, plan)
+    print(f"\nApplied. MEMORY.md now {plan.projected_lines} lines.")
+
+    if not commit:
+        return 0
+
+    files = [cfg.memory_dir / f.target_name for f in plan.flattens] + [index_path]
+    subject = (
+        f"memory-doctor compact: {len(plan.flattens)} entr"
+        f"{'ies' if len(plan.flattens) != 1 else 'y'} flattened, "
+        f"MEMORY.md {plan.original_lines} -> {plan.projected_lines} lines"
+    )
+    body_lines = [
+        f"- {f.target_name} (appended {len(f.detail_lines)}-line detail block from index)"
+        for f in plan.flattens
+    ]
+    delta = plan.original_lines - plan.projected_lines
+    body_lines.append(
+        f"- MEMORY.md ({len(plan.flattens)} entries flattened to one-liners, -{delta} lines)"
+    )
+    body = "\n".join(body_lines)
+    result = commit_run(
+        memory_dir=cfg.memory_dir,
+        files=files,
+        subject=subject,
+        body=body,
+        author=commit_author,
+    )
+    if result.error_kind is None:
+        print(f"\nCommitted {result.sha}")
+        return 0
+    if result.error_kind == "hook":
+        print(
+            "\nerror: pre-commit hook rejected the commit; your file changes are staged but not committed",
+            file=sys.stderr,
+        )
+        print(f"  files: {', '.join(f.name for f in files)}", file=sys.stderr)
+        print(f"  details: {result.error_message}", file=sys.stderr)
+        return 1
+    print(f"\nerror: commit failed ({result.error_kind}): {result.error_message}", file=sys.stderr)
+    return 1

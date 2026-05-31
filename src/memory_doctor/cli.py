@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 
 from memory_doctor import __version__
@@ -9,9 +10,18 @@ from memory_doctor.paths import PathConfigError, resolve_paths
 
 
 def _add_common(p: argparse.ArgumentParser) -> None:
-    p.add_argument("--memory-dir", default=None, help="Memory dir (cards + MEMORY.md). Default: ~/.claude/projects/-home-clawdbot/memory")
-    p.add_argument("--handoffs-dir", default=None, help="Handoffs dir. Default: ~/.openclaw/workspace/.claude/memory-handoffs")
+    p.add_argument("--memory-dir", default=None, help="Memory dir (cards + MEMORY.md).")
+    p.add_argument("--handoffs-dir", default=None, help="Handoffs dir.")
     p.add_argument("--max-lines", type=int, default=None, help="MEMORY.md threshold (default 180)")
+
+
+def _add_commit_flags(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--commit", action="store_true", help="Stage + commit after --apply (off by default).")
+    p.add_argument("--no-commit", action="store_true", help="Suppress committing even if MEMORY_DOCTOR_COMMIT=1.")
+    p.add_argument(
+        "--commit-author", default=None,
+        help='Override author for this commit ("Name <email>"). Default: git config user.name/user.email.',
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -28,14 +38,32 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_ingest = sub.add_parser("ingest", help="Promote pending handoffs into cards")
     _add_common(p_ingest)
+    _add_commit_flags(p_ingest)
     p_ingest.add_argument("--apply", action="store_true", help="Actually write changes (default: dry-run)")
     p_ingest.add_argument("--force", action="store_true", help="Overwrite existing cards on create-card conflict")
 
     p_compact = sub.add_parser("compact", help="Flatten multi-line MEMORY.md entries into topic files")
     _add_common(p_compact)
+    _add_commit_flags(p_compact)
     p_compact.add_argument("--apply", action="store_true", help="Actually write changes (default: dry-run)")
 
+    p_init = sub.add_parser("init-git", help="Initialize the memory dir as a git repo with one initial commit")
+    _add_common(p_init)
+
     return root
+
+
+def _resolve_commit_flag(args) -> bool:
+    """Resolve commit intent from flag + env. --no-commit always wins."""
+    if getattr(args, "no_commit", False):
+        return False
+    if getattr(args, "commit", False):
+        return True
+    return os.environ.get("MEMORY_DOCTOR_COMMIT", "").strip() in ("1", "true", "yes")
+
+
+def _resolve_commit_author(args) -> str | None:
+    return getattr(args, "commit_author", None) or os.environ.get("MEMORY_DOCTOR_COMMIT_AUTHOR") or None
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -60,10 +88,21 @@ def main(argv: list[str] | None = None) -> int:
         return run_lint(cfg)
     if args.verb == "ingest":
         from memory_doctor.ingest import run as run_ingest
-        return run_ingest(cfg, apply=args.apply, force=args.force)
+        return run_ingest(
+            cfg, apply=args.apply, force=args.force,
+            commit=_resolve_commit_flag(args),
+            commit_author=_resolve_commit_author(args),
+        )
     if args.verb == "compact":
         from memory_doctor.compact import run as run_compact
-        return run_compact(cfg, apply=args.apply)
+        return run_compact(
+            cfg, apply=args.apply,
+            commit=_resolve_commit_flag(args),
+            commit_author=_resolve_commit_author(args),
+        )
+    if args.verb == "init-git":
+        from memory_doctor.init_git import run as run_init_git
+        return run_init_git(cfg)
     parser.error(f"unknown verb: {args.verb}")
     return 2
 

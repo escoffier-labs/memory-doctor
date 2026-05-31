@@ -56,5 +56,12 @@ def resolve_paths(
         lines = max_lines
     else:
         env = os.environ.get("MEMORY_DOCTOR_MAX_LINES")
-        lines = int(env) if env else DEFAULT_MAX_LINES
+        try:
+            lines = int(env) if env else DEFAULT_MAX_LINES
+        except ValueError:
+            raise PathConfigError(
+                f"MEMORY_DOCTOR_MAX_LINES must be an integer, got: {env!r}"
+            ) from None
+    if lines <= 0:
+        raise PathConfigError(f"max lines must be greater than 0, got: {lines}")
     return PathConfig(memory_dir=md, handoffs_dir=hd, max_lines=lines)
