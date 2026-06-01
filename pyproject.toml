@@ -21,7 +21,7 @@ classifiers = [
   "Programming Language :: Python :: 3.12",
 ]
 dependencies = [
-  "brigade-cli @ git+https://github.com/escoffier-labs/brigade.git@main",
+  "brigade-cli>=0.8.0",
 ]
 
 [project.urls]
@@ -36,10 +36,6 @@ dev = ["pytest>=8.0"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
-
-[tool.hatch.metadata]
-# brigade-cli is referenced by git URL until it is pinned to a PyPI release.
-allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/memory_doctor"]
