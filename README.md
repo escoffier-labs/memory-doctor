@@ -15,13 +15,13 @@ memory-doctor init-git            # initialize the memory dir as a git repo (one
 ## Install
 
 ```bash
-pipx install git+https://github.com/solomonneas/memory-doctor
+pipx install git+https://github.com/escoffier-labs/memory-doctor
 ```
 
 Or from a local clone:
 
 ```bash
-git clone https://github.com/solomonneas/memory-doctor && cd memory-doctor
+git clone https://github.com/escoffier-labs/memory-doctor && cd memory-doctor
 pipx install .
 ```
 
