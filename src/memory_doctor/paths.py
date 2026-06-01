@@ -5,6 +5,10 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+# The MEMORY.md index line limit is owned by brigade.budgets (the canonical
+# source of truth shared across the escoffier-labs tooling).
+from brigade.budgets import MEMORY_INDEX_MAX_LINES as DEFAULT_MAX_LINES
+
 
 def _default_memory_dir() -> str:
     """Derive Claude Code's per-project memory dir from $HOME.
@@ -20,7 +24,6 @@ def _default_memory_dir() -> str:
 
 DEFAULT_MEMORY_DIR = _default_memory_dir()
 DEFAULT_HANDOFFS_DIR = "~/.openclaw/workspace/.claude/memory-handoffs"
-DEFAULT_MAX_LINES = 180
 
 
 class PathConfigError(Exception):
