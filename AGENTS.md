@@ -1,7 +1,11 @@
 # Repository Guidance
 
 ## Definition of Done
-- Before claiming any task complete, run `python3 -m pytest -q` from the repo root and report the actual result (e.g. "101 passed").
+```
+./scripts/verify
+```
+It runs the full test suite (`python3 -m pytest -q`) from the repo root.
+- Before claiming any task complete, run `./scripts/verify` and report the actual result (e.g. "101 passed").
 - If anything fails, paste the failure output verbatim and say the task is not done. Never claim success without a fresh passing run.
 
 ## Project Shape
