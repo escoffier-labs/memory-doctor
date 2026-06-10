@@ -29,16 +29,20 @@ def test_default_memory_dir_matches_helper():
 def test_resolves_flag_over_env_over_default(tmp_path, monkeypatch):
     a = tmp_path / "a"
     a.mkdir()
+    h = tmp_path / "handoffs"
+    h.mkdir()
     monkeypatch.setenv("MEMORY_DOCTOR_MEMORY_DIR", "/from-env")
-    cfg = resolve_paths(memory_dir=str(a), handoffs_dir=None, max_lines=None)
+    cfg = resolve_paths(memory_dir=str(a), handoffs_dir=str(h), max_lines=None)
     assert cfg.memory_dir == a
 
 
 def test_resolves_env_when_no_flag(tmp_path, monkeypatch):
     a = tmp_path / "via-env"
     a.mkdir()
+    h = tmp_path / "handoffs"
+    h.mkdir()
     monkeypatch.setenv("MEMORY_DOCTOR_MEMORY_DIR", str(a))
-    cfg = resolve_paths(memory_dir=None, handoffs_dir=None, max_lines=None)
+    cfg = resolve_paths(memory_dir=None, handoffs_dir=str(h), max_lines=None)
     assert cfg.memory_dir == a
 
 
