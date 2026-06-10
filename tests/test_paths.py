@@ -42,6 +42,14 @@ def test_resolves_env_when_no_flag(tmp_path, monkeypatch):
     assert cfg.memory_dir == a
 
 
+def test_default_max_lines_matches_brigade_canonical():
+    # brigade.budgets owns the canonical value; the in-module fallback must
+    # agree with it so a degraded install behaves identically.
+    from brigade.budgets import MEMORY_INDEX_MAX_LINES
+
+    assert DEFAULT_MAX_LINES == MEMORY_INDEX_MAX_LINES == 180
+
+
 def test_default_max_lines_180(tmp_path, monkeypatch):
     monkeypatch.delenv("MEMORY_DOCTOR_MAX_LINES", raising=False)
     a = tmp_path / "a"; a.mkdir()
