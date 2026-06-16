@@ -25,7 +25,7 @@ git clone https://github.com/escoffier-labs/memory-doctor && cd memory-doctor
 pipx install .
 ```
 
-Requires Python 3.10+. No runtime dependencies beyond stdlib.
+Requires Python 3.10+. One runtime dependency: `brigade-cli>=0.8.0` (used for the canonical MEMORY.md line threshold).
 
 ## Development
 

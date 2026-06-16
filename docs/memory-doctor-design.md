@@ -75,7 +75,7 @@ Order: explicit flag > env var > default.
 
 | What | Flag | Env | Default |
 |---|---|---|---|
-| Memory dir (cards + MEMORY.md) | `--memory-dir PATH` | `MEMORY_DOCTOR_MEMORY_DIR` | `~/.claude/projects/-home-clawdbot/memory/` |
+| Memory dir (cards + MEMORY.md) | `--memory-dir PATH` | `MEMORY_DOCTOR_MEMORY_DIR` | `~/.claude/projects/-home-alice/memory/` |
 | Handoffs dir | `--handoffs-dir PATH` | `MEMORY_DOCTOR_HANDOFFS_DIR` | `~/.openclaw/workspace/.claude/memory-handoffs/` |
 | MEMORY.md threshold (lines) | `--max-lines N` | `MEMORY_DOCTOR_MAX_LINES` | `180` |
 
@@ -225,7 +225,7 @@ Target: ~43 tests. All hermetic.
 
 ## Related context
 
-- Memory layout: `~/.claude/projects/-home-clawdbot/memory/` - 167 cards + MEMORY.md, currently 201 lines (truncation kicks in at ~200).
+- Memory layout: `~/.claude/projects/-home-alice/memory/` - 167 cards + MEMORY.md, currently 201 lines (truncation kicks in at ~200).
 - Handoffs layout: `~/.openclaw/workspace/.claude/memory-handoffs/` - 2 pending, 100 in `processed/`.
 - Handoff template: see `TEMPLATE.md` in that dir; sections are stable.
 - Distribution pattern: `pipx install` matches `eero-cli` (already user-installed via pipx).

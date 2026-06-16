@@ -1766,7 +1766,7 @@ Expected: ~81 tests pass (67 previous + ~14 new). Zero failures.
 
 Run:
 ```bash
-pipx install --force /home/clawdbot/repos/memory-doctor
+pipx install --force ~/repos/memory-doctor
 memory-doctor --version
 memory-doctor --help
 memory-doctor init-git --help
@@ -1780,7 +1780,7 @@ Expected: `memory-doctor 0.2.0`, help shows `init-git` as a verb, `ingest`/`comp
 
 Run: `memory-doctor status`
 
-Expected: prints the standard status report against `~/.claude/projects/-home-clawdbot/memory/` without exception. No commits made.
+Expected: prints the standard status report against `~/.claude/projects/-home-alice/memory/` without exception. No commits made.
 
 - [ ] **Step 4: Verify --commit refuses on the real memory dir**
 
