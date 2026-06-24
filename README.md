@@ -6,7 +6,7 @@ Maintenance CLI for the Claude Code / OpenClaw file-based memory system. Five ve
 memory-doctor status              # read-only summary
 memory-doctor lint                # find dead [[wiki-links]]; exit 1 if any
 memory-doctor ingest [--apply]    # promote pending handoffs into cards
-memory-doctor compact [--apply]   # flatten multi-line MEMORY.md entries into topic files
+memory-doctor compact [--apply]   # flatten/tighten oversized MEMORY.md entries into topic files
 memory-doctor init-git            # initialize the memory dir as a git repo (one-time)
 ```
 
@@ -45,16 +45,19 @@ The repo config points pytest at `src/`, so tests also run from a plain checkout
 | Memory dir (cards + MEMORY.md) | `--memory-dir PATH` | `MEMORY_DOCTOR_MEMORY_DIR` | `~/.claude/projects/<project-scope>/memory` |
 | Handoffs dir | `--handoffs-dir PATH` | `MEMORY_DOCTOR_HANDOFFS_DIR` | `~/.openclaw/workspace/.claude/memory-handoffs` |
 | MEMORY.md threshold (lines) | `--max-lines N` | `MEMORY_DOCTOR_MAX_LINES` | `180` |
+| MEMORY.md threshold (bytes) | `--max-bytes N` | `MEMORY_DOCTOR_MAX_BYTES` | `24000` |
 | Commit verb output | `--commit` / `--no-commit` | `MEMORY_DOCTOR_COMMIT` | off |
 | Commit author override | `--commit-author "Name <e>"` | `MEMORY_DOCTOR_COMMIT_AUTHOR` | from git config |
 
 `<project-scope>` is the dash-prefixed home-dir path Claude Code uses to scope per-project memory (e.g. `-home-alice` for user `alice`, `-home-bob` for user `bob`). The defaults are tuned for the OpenClaw layout. Override via flags or env for other setups.
 
+The byte threshold defaults to 24000 because the Claude Code harness silently drops MEMORY.md content read beyond a ~24.4KB limit. An index that is fine on the line count can still have its tail invisible to the agent, so `status` and `compact` track both.
+
 ## What each verb does
 
 ### `status`
 
-Prints memory dir path, card count, MEMORY.md line+byte count, threshold status, dead-link count, handoffs dir path, pending + processed counts, oldest pending age. Exits 0. `--json` for a structured payload.
+Prints memory dir path, card count, MEMORY.md line+byte count, line and byte threshold status (each marked ok or OVER), dead-link count, handoffs dir path, pending + processed counts, oldest pending age. Exits 0. `--json` for a structured payload (includes `over_threshold`, `max_lines`, `over_bytes`, `max_bytes`).
 
 ### `lint`
 
@@ -72,7 +75,12 @@ Successful handoffs are moved into `<handoffs-dir>/processed/`. Dry-run by defau
 
 ### `compact`
 
-Reads MEMORY.md, counts lines. If above the threshold, identifies multi-line entries (bullets whose detail spans more than one line) and proposes flattening them: keep the one-liner in the index, append the detail to the target topic file under a `## From index (YYYY-MM-DD)` section. Dry-run by default; `--apply` writes (topic files first, MEMORY.md last). Refuses if a target topic file is missing (would orphan content). Warns if compaction alone won't bring MEMORY.md under threshold.
+Reads MEMORY.md, counts lines and bytes. Triggers when MEMORY.md is over the line threshold OR the byte threshold. Two non-lossy passes:
+
+- Flatten: for multi-line entries (bullets whose detail spans more than one line), keep the one-liner in the index and append the detail to the target topic file under a `## From index (YYYY-MM-DD)` section.
+- Tighten: for single-line entries whose hook exceeds `max_hook_chars` (default 140) and whose linked card exists, append the full hook to the card under the same breadcrumb and rewrite the index line with a word-boundary-truncated hook ending in `...`. Dangling links (no card on disk) are left full, since the index may be the only record. No `](...)` pointer is ever dropped.
+
+Every rewritten line is normalized to ASCII punctuation (em dash, en dash, and a few other glyphs become `-`, `->`, `>=`, `<=`, `~`), with a final whole-file normalization pass on apply. Link targets are never touched. Dry-run by default; `--apply` writes (topic files first, MEMORY.md last). Refuses if a target topic file is missing for a flatten candidate (would orphan content). Warns if compaction alone won't bring MEMORY.md under either threshold. Re-running `--apply` is a no-op.
 
 ## Commit integration (v0.2)
 

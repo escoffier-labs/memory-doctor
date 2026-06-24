@@ -12,7 +12,8 @@ from memory_doctor.paths import PathConfigError, resolve_paths
 def _add_common(p: argparse.ArgumentParser) -> None:
     p.add_argument("--memory-dir", default=None, help="Memory dir (cards + MEMORY.md).")
     p.add_argument("--handoffs-dir", default=None, help="Handoffs dir.")
-    p.add_argument("--max-lines", type=int, default=None, help="MEMORY.md threshold (default 180)")
+    p.add_argument("--max-lines", type=int, default=None, help="MEMORY.md line threshold (default 180)")
+    p.add_argument("--max-bytes", type=int, default=None, help="MEMORY.md byte threshold (default 24000)")
 
 
 def _add_commit_flags(p: argparse.ArgumentParser) -> None:
@@ -75,6 +76,7 @@ def main(argv: list[str] | None = None) -> int:
             memory_dir=args.memory_dir,
             handoffs_dir=args.handoffs_dir,
             max_lines=args.max_lines,
+            max_bytes=args.max_bytes,
         )
     except PathConfigError as e:
         print(f"memory-doctor: {e}", file=sys.stderr)

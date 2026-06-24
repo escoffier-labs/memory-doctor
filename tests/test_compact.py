@@ -5,8 +5,14 @@ from memory_doctor.paths import PathConfig
 from memory_doctor.compact import run, plan_compaction
 
 
-def cfg(memory_dir, handoffs_dir, max_lines=10):
-    return PathConfig(memory_dir=memory_dir, handoffs_dir=handoffs_dir, max_lines=max_lines)
+def cfg(memory_dir, handoffs_dir, max_lines=10, max_bytes=24000, max_hook_chars=140):
+    return PathConfig(
+        memory_dir=memory_dir,
+        handoffs_dir=handoffs_dir,
+        max_lines=max_lines,
+        max_bytes=max_bytes,
+        max_hook_chars=max_hook_chars,
+    )
 
 
 def test_under_threshold_no_op(memory_dir, handoffs_dir, capsys):
@@ -274,3 +280,196 @@ def test_compact_commit_invalid_author_refuses_before_writes(git_memory_dir, han
         capture_output=True, text=True, check=True,
     ).stdout
     assert status == ""
+
+
+# --- Change 2: tighten overlong single-line hooks ---------------------------
+
+EMDASH = "—"   # em dash
+ENDASH = "–"   # en dash
+HBAR = "―"     # horizontal bar
+ARROW = "→"    # right arrow
+GTE = "≥"      # greater-than-or-equal
+LTE = "≤"      # less-than-or-equal
+APPROX = "≈"   # almost equal
+MIDDOT = "·"   # middle dot
+
+
+def _link_count(text: str) -> int:
+    return text.count("](")
+
+
+def test_plan_identifies_overlong_single_line_hooks(memory_dir):
+    write_card(memory_dir, "topic-long", "## existing\nbody\n")
+    long_hook = "this hook is way too long " * 10  # ~260 chars
+    write_memory_index(memory_dir, [
+        "# Memory Index",
+        "## Section",
+        f"- [topic-long](topic-long.md) {long_hook}",
+        "- [topic-long](topic-long.md) short hook stays",
+    ])
+    plan = plan_compaction(memory_dir, max_lines=100, max_hook_chars=140)
+    assert any(t.target_name == "topic-long.md" for t in plan.tightens)
+    # The short-hook entry must NOT be a tighten candidate.
+    assert len(plan.tightens) == 1
+
+
+def test_apply_tightens_long_hook_and_moves_full_text_to_card(memory_dir, handoffs_dir):
+    write_card(memory_dir, "topic-long", "original card body\n")
+    long_hook = "alpha beta gamma delta epsilon " * 8  # ~248 chars
+    write_memory_index(memory_dir, [
+        "# Memory Index",
+        "## Section",
+        f"- [topic-long](topic-long.md) {long_hook.strip()}",
+    ])
+    before_bytes = (memory_dir / "MEMORY.md").stat().st_size
+    code = run(
+        cfg(memory_dir, handoffs_dir, max_lines=100, max_bytes=1, max_hook_chars=140),
+        apply=True,
+    )
+    assert code == 0
+    card = (memory_dir / "topic-long.md").read_text()
+    index = (memory_dir / "MEMORY.md").read_text()
+    # Full hook text preserved in the card.
+    assert long_hook.strip() in card
+    assert "From index" in card
+    # Index line shortened with an ellipsis, link prefix intact.
+    assert "- [topic-long](topic-long.md) " in index
+    assert "..." in index
+    assert long_hook.strip() not in index
+    # Index got smaller.
+    assert (memory_dir / "MEMORY.md").stat().st_size < before_bytes
+    # No pointer lost.
+    assert _link_count(index) == 1
+
+
+def test_tighten_normalizes_em_dashes(memory_dir, handoffs_dir):
+    write_card(memory_dir, "topic-dash", "body\n")
+    long_hook = ("uses an em dash " + EMDASH + " right here and a long tail ") * 6
+    write_memory_index(memory_dir, [
+        "# Memory Index",
+        "## Section",
+        f"- [topic-dash](topic-dash.md) {long_hook.strip()}",
+    ])
+    run(cfg(memory_dir, handoffs_dir, max_lines=100, max_bytes=1, max_hook_chars=140), apply=True)
+    index = (memory_dir / "MEMORY.md").read_text()
+    for ch in (EMDASH, ENDASH, HBAR, ARROW, GTE, LTE, APPROX, MIDDOT):
+        assert ch not in index
+
+
+def test_em_dash_in_short_entry_normalized_in_place(memory_dir, handoffs_dir):
+    # Short entry: not a tighten candidate, but em dash still must be scrubbed.
+    write_card(memory_dir, "topic-s", "body\n")
+    write_memory_index(memory_dir, [
+        "# Memory Index",
+        "## Section " + EMDASH + " heading dash",
+        f"- [topic-s](topic-s.md) short hook with {EMDASH} dash",
+    ])
+    # Over byte threshold so compact triggers even though nothing to flatten/tighten.
+    run(cfg(memory_dir, handoffs_dir, max_lines=100, max_bytes=1, max_hook_chars=140), apply=True)
+    index = (memory_dir / "MEMORY.md").read_text()
+    assert EMDASH not in index
+    # The short hook is preserved (not truncated).
+    assert "short hook with - dash" in index
+    assert _link_count(index) == 1
+
+
+def test_tighten_leaves_link_targets_untouched(memory_dir, handoffs_dir):
+    # A target with characters that could be hit by normalization must survive.
+    write_card(memory_dir, "topic-z", "body\n")
+    long_hook = "zeta eta theta iota kappa lambda mu nu xi omicron pi rho " * 4
+    write_memory_index(memory_dir, [
+        "# Memory Index",
+        "## Section",
+        f"- [topic-z](topic-z.md) {long_hook.strip()}",
+    ])
+    run(cfg(memory_dir, handoffs_dir, max_lines=100, max_bytes=1, max_hook_chars=140), apply=True)
+    index = (memory_dir / "MEMORY.md").read_text()
+    assert "(topic-z.md)" in index
+
+
+def test_tighten_dangling_link_stays_full_only_normalized(memory_dir, handoffs_dir):
+    # No card on disk: the index may be the ONLY record. Do not truncate;
+    # only normalize the em dash.
+    long_hook = ("dangling " + EMDASH + " long hook content here and more ") * 8
+    write_memory_index(memory_dir, [
+        "# Memory Index",
+        "## Section",
+        f"- [gone](gone.md) {long_hook.strip()}",
+    ])
+    run(cfg(memory_dir, handoffs_dir, max_lines=100, max_bytes=1, max_hook_chars=140), apply=True)
+    index = (memory_dir / "MEMORY.md").read_text()
+    # Full text preserved (the normalized version, without em dash).
+    normalized_hook = long_hook.strip().replace(EMDASH, "-")
+    assert normalized_hook in index
+    assert "..." not in index
+    assert EMDASH not in index
+    assert _link_count(index) == 1
+
+
+def test_tighten_skips_unsafe_target(memory_dir, handoffs_dir, tmp_path):
+    outside = tmp_path / "outside.md"
+    outside.write_text("untouched")
+    long_hook = "unsafe path hook content that is quite long indeed " * 5
+    write_memory_index(memory_dir, [
+        "# Memory Index",
+        "## Section",
+        f"- [evil](../outside.md) {long_hook.strip()}",
+    ])
+    plan = plan_compaction(memory_dir, max_lines=100, max_hook_chars=140)
+    assert "../outside.md" in plan.unsafe_targets
+    assert all(t.target_name != "../outside.md" for t in plan.tightens)
+    run(cfg(memory_dir, handoffs_dir, max_lines=100, max_bytes=1, max_hook_chars=140), apply=True)
+    assert outside.read_text() == "untouched"
+
+
+def test_tighten_is_idempotent(memory_dir, handoffs_dir):
+    write_card(memory_dir, "topic-idem", "body\n")
+    long_hook = "idempotent hook content repeated many times over here " * 5
+    write_memory_index(memory_dir, [
+        "# Memory Index",
+        "## Section",
+        f"- [topic-idem](topic-idem.md) {long_hook.strip()}",
+    ])
+    run(cfg(memory_dir, handoffs_dir, max_lines=100, max_bytes=1, max_hook_chars=140), apply=True)
+    index_after_first = (memory_dir / "MEMORY.md").read_text()
+    card_after_first = (memory_dir / "topic-idem.md").read_text()
+    # Second apply on the already-tightened index must be a no-op.
+    run(cfg(memory_dir, handoffs_dir, max_lines=100, max_bytes=1, max_hook_chars=140), apply=True)
+    index_after_second = (memory_dir / "MEMORY.md").read_text()
+    card_after_second = (memory_dir / "topic-idem.md").read_text()
+    assert index_after_second == index_after_first
+    assert card_after_second == card_after_first
+    assert card_after_second.count("tighten:") == 1
+
+
+def test_compact_triggers_on_bytes_even_under_line_threshold(memory_dir, handoffs_dir, capsys):
+    write_card(memory_dir, "topic-b", "body\n")
+    long_hook = "byte trigger hook with lots and lots of repeated content " * 6
+    write_memory_index(memory_dir, [
+        "# Memory Index",
+        "## Section",
+        f"- [topic-b](topic-b.md) {long_hook.strip()}",
+    ])
+    # Way under the line threshold, but over the byte threshold.
+    code = run(
+        cfg(memory_dir, handoffs_dir, max_lines=10000, max_bytes=1, max_hook_chars=140),
+        apply=True,
+    )
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "no action needed" not in out.lower()
+    index = (memory_dir / "MEMORY.md").read_text()
+    assert "..." in index
+
+
+def test_compact_truly_nothing_to_do_message(memory_dir, handoffs_dir, capsys):
+    # Under both thresholds, no flatten, no tighten, no em dash.
+    write_memory_index(memory_dir, [
+        "# Memory Index",
+        "## Section",
+        "- [a](a.md) short clean hook",
+    ])
+    code = run(cfg(memory_dir, handoffs_dir, max_lines=10000, max_bytes=10000, max_hook_chars=140), apply=True)
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "no action needed" in out.lower()

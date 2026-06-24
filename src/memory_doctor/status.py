@@ -23,6 +23,8 @@ class Status:
     oldest_pending_age_days: float | None
     over_threshold: bool
     max_lines: int
+    over_bytes: bool
+    max_bytes: int
 
 
 def _count_cards(memory_dir: Path) -> int:
@@ -69,6 +71,8 @@ def collect_status(cfg: PathConfig) -> Status:
         oldest_pending_age_days=oldest,
         over_threshold=index_lines > cfg.max_lines,
         max_lines=cfg.max_lines,
+        over_bytes=index_bytes > cfg.max_bytes,
+        max_bytes=cfg.max_bytes,
     )
 
 
@@ -77,7 +81,8 @@ def format_status_human(s: Status) -> str:
         f"memory dir:       {s.memory_dir}",
         f"  cards:          {s.cards}",
         f"  MEMORY.md:      {s.memory_index_lines} lines, {s.memory_index_bytes} bytes",
-        f"  threshold:      {s.max_lines} ({'OVER' if s.over_threshold else 'ok'})",
+        f"  lines:          {s.memory_index_lines} / {s.max_lines} ({'OVER' if s.over_threshold else 'ok'})",
+        f"  bytes:          {s.memory_index_bytes} / {s.max_bytes} ({'OVER' if s.over_bytes else 'ok'})",
         f"  dead links:     {s.dead_links}",
         "",
         f"handoffs dir:     {s.handoffs_dir}",
