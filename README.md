@@ -1,6 +1,21 @@
-# memory-doctor
+<p align="center">
+  <img src="docs/assets/memory-doctor-social-preview.jpg" alt="Memory Doctor banner" width="900">
+</p>
 
-Maintenance CLI for the Claude Code / OpenClaw file-based memory system. Five verbs:
+<h1 align="center">Memory Doctor</h1>
+
+<p align="center">
+  <strong>Maintenance CLI for the file-based memory your AI coding agents share. Status, lint, ingest, and compact for the Claude Code / OpenClaw memory system, dry-run by default with optional commit receipts.</strong>
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/github/actions/workflow/status/escoffier-labs/memory-doctor/ci.yml?branch=master&style=for-the-badge&label=ci" alt="CI status">
+  <img src="https://img.shields.io/pypi/v/memory-doctor?style=for-the-badge&label=pypi" alt="PyPI version">
+  <img src="https://img.shields.io/badge/python-3.10%2B-blue?style=for-the-badge&logo=python&logoColor=white" alt="Python 3.10+">
+  <img src="https://img.shields.io/badge/license-MIT-green?style=for-the-badge" alt="MIT license">
+</p>
+
+Memory Doctor keeps the file-based memory your AI coding agents share from rotting: a read-only health check, a dead-`[[wiki-link]]` linter, a handoff ingester, and a MEMORY.md compactor. Five verbs:
 
 ```
 memory-doctor status              # read-only summary
@@ -19,6 +34,12 @@ memory-doctor init-git            # initialize the memory dir as a git repo (one
 `status` is a read-only health summary; `lint` catches dead `[[wiki-links]]` before your agent's memory rots, and exits non-zero so CI or a pre-commit hook can gate on it.
 
 ## Install
+
+```bash
+pipx install memory-doctor
+```
+
+Or straight from the repo:
 
 ```bash
 pipx install git+https://github.com/escoffier-labs/memory-doctor
