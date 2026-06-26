@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from memory_doctor.paths import (
+    DEFAULT_MAX_BYTES,
     DEFAULT_MAX_LINES,
     DEFAULT_MEMORY_DIR,
     PathConfig,
@@ -91,6 +92,46 @@ def test_non_positive_max_lines_raises(tmp_path):
     b = tmp_path / "b"; b.mkdir()
     with pytest.raises(PathConfigError) as exc:
         resolve_paths(memory_dir=str(a), handoffs_dir=str(b), max_lines=0)
+    assert "greater than 0" in str(exc.value)
+
+
+def test_default_max_bytes_is_24000(tmp_path, monkeypatch):
+    monkeypatch.delenv("MEMORY_DOCTOR_MAX_BYTES", raising=False)
+    a = tmp_path / "a"; a.mkdir()
+    b = tmp_path / "b"; b.mkdir()
+    cfg = resolve_paths(memory_dir=str(a), handoffs_dir=str(b), max_lines=None, max_bytes=None)
+    assert cfg.max_bytes == DEFAULT_MAX_BYTES == 24000
+
+
+def test_max_bytes_override_via_flag(tmp_path):
+    a = tmp_path / "a"; a.mkdir()
+    b = tmp_path / "b"; b.mkdir()
+    cfg = resolve_paths(memory_dir=str(a), handoffs_dir=str(b), max_lines=None, max_bytes=5000)
+    assert cfg.max_bytes == 5000
+
+
+def test_max_bytes_from_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("MEMORY_DOCTOR_MAX_BYTES", "9000")
+    a = tmp_path / "a"; a.mkdir()
+    b = tmp_path / "b"; b.mkdir()
+    cfg = resolve_paths(memory_dir=str(a), handoffs_dir=str(b), max_lines=None, max_bytes=None)
+    assert cfg.max_bytes == 9000
+
+
+def test_invalid_max_bytes_from_env_raises(tmp_path, monkeypatch):
+    monkeypatch.setenv("MEMORY_DOCTOR_MAX_BYTES", "abc")
+    a = tmp_path / "a"; a.mkdir()
+    b = tmp_path / "b"; b.mkdir()
+    with pytest.raises(PathConfigError) as exc:
+        resolve_paths(memory_dir=str(a), handoffs_dir=str(b), max_lines=None, max_bytes=None)
+    assert "MEMORY_DOCTOR_MAX_BYTES" in str(exc.value)
+
+
+def test_non_positive_max_bytes_raises(tmp_path):
+    a = tmp_path / "a"; a.mkdir()
+    b = tmp_path / "b"; b.mkdir()
+    with pytest.raises(PathConfigError) as exc:
+        resolve_paths(memory_dir=str(a), handoffs_dir=str(b), max_lines=None, max_bytes=0)
     assert "greater than 0" in str(exc.value)
 
 

@@ -15,6 +15,13 @@ try:
 except ImportError:  # pragma: no cover - brigade-cli is a declared dependency
     DEFAULT_MAX_LINES = 180
 
+# The Claude Code harness silently DROPS MEMORY.md content read beyond a
+# ~24.4KB limit, so an index that is fine on the line threshold can still have
+# its tail invisible to the agent. 24000 is a safe default just under that
+# observed ~24.4KB read ceiling. Unlike the line budget this is harness
+# behavior, not a brigade.budgets value, so it is owned here.
+DEFAULT_MAX_BYTES = 24000
+
 
 def _default_memory_dir() -> str:
     """Derive Claude Code's per-project memory dir from $HOME.
@@ -41,6 +48,10 @@ class PathConfig:
     memory_dir: Path
     handoffs_dir: Path
     max_lines: int
+    max_bytes: int = DEFAULT_MAX_BYTES
+    # Hooks shorter than this stay full in the index; longer ones are
+    # "tighten" candidates whose full text is moved into the linked card.
+    max_hook_chars: int = 140
 
 
 def _resolve_dir(flag: str | None, env_key: str, default: str, label: str) -> Path:
@@ -58,6 +69,7 @@ def resolve_paths(
     memory_dir: str | None,
     handoffs_dir: str | None,
     max_lines: int | None,
+    max_bytes: int | None = None,
 ) -> PathConfig:
     md = _resolve_dir(memory_dir, "MEMORY_DOCTOR_MEMORY_DIR", DEFAULT_MEMORY_DIR, "memory")
     hd = _resolve_dir(handoffs_dir, "MEMORY_DOCTOR_HANDOFFS_DIR", DEFAULT_HANDOFFS_DIR, "handoffs")
@@ -73,4 +85,16 @@ def resolve_paths(
             ) from None
     if lines <= 0:
         raise PathConfigError(f"max lines must be greater than 0, got: {lines}")
-    return PathConfig(memory_dir=md, handoffs_dir=hd, max_lines=lines)
+    if max_bytes is not None:
+        nbytes = max_bytes
+    else:
+        env_b = os.environ.get("MEMORY_DOCTOR_MAX_BYTES")
+        try:
+            nbytes = int(env_b) if env_b else DEFAULT_MAX_BYTES
+        except ValueError:
+            raise PathConfigError(
+                f"MEMORY_DOCTOR_MAX_BYTES must be an integer, got: {env_b!r}"
+            ) from None
+    if nbytes <= 0:
+        raise PathConfigError(f"max bytes must be greater than 0, got: {nbytes}")
+    return PathConfig(memory_dir=md, handoffs_dir=hd, max_lines=lines, max_bytes=nbytes)
