@@ -5,7 +5,17 @@
 <h1 align="center">Memory Doctor</h1>
 
 <p align="center">
-  <strong>Maintenance CLI for the file-based memory your AI coding agents share. Status, lint, ingest, and compact for the Claude Code / OpenClaw memory system, dry-run by default with optional commit receipts.</strong>
+  <strong>Maintenance CLI that keeps the file-based memory your AI coding agents share from rotting: status, lint, ingest, and compact for the Claude Code / OpenClaw memory system. Dry-run by default, with optional git commit receipts so every write is reviewable. Unlike a hosted memory service or a per-tool silo, your memory stays plain markdown on disk that you can grep, diff, and revert.</strong>
+</p>
+
+<p align="center">
+  <a href="https://memory-doctor.escoffierlabs.dev"><strong>Website</strong></a>
+  &nbsp;&middot;&nbsp;
+  <a href="#install">Install</a>
+  &nbsp;&middot;&nbsp;
+  <a href="#what-each-verb-does">Verbs</a>
+  &nbsp;&middot;&nbsp;
+  <a href="#why-not-other-tools">Why not other tools</a>
 </p>
 
 <p align="center">
@@ -15,7 +25,9 @@
   <img src="https://img.shields.io/badge/license-MIT-green?style=for-the-badge" alt="MIT license">
 </p>
 
-Memory Doctor keeps the file-based memory your AI coding agents share from rotting: a read-only health check, a dead-`[[wiki-link]]` linter, a handoff ingester, and a MEMORY.md compactor. Five verbs:
+## What it does
+
+Memory Doctor is a maintenance CLI for the **file-based agent memory** that Claude Code and OpenClaw keep on disk: the cards, the MEMORY.md index, and the handoff inbox your AI coding agents read and write every session. Left alone, that memory rots. Links to deleted cards go dead, the index grows past the harness read limit and the tail goes invisible to the agent, and handoffs pile up in the inbox unprocessed. Memory Doctor catches all three. It is read-only by default, makes no network calls, and handles no credentials. Five verbs:
 
 ```
 memory-doctor status              # read-only summary
@@ -53,6 +65,26 @@ pipx install .
 ```
 
 Requires Python 3.10+. One runtime dependency: `brigade-cli>=0.8.0` (used for the canonical MEMORY.md line threshold).
+
+## Quickstart
+
+```bash
+# Read-only health summary of the memory dir (no writes, exits 0):
+memory-doctor status
+
+# Find dead [[wiki-links]] before they rot the index (exits 1 if any):
+memory-doctor lint
+
+# Preview promoting pending handoffs into cards (dry-run):
+memory-doctor ingest
+memory-doctor ingest --apply        # actually write
+
+# Preview compacting an oversized MEMORY.md (dry-run):
+memory-doctor compact
+memory-doctor compact --apply       # actually write
+```
+
+Point it at any memory layout with `--memory-dir` / `--handoffs-dir` or the matching env vars (see [Configuration](#configuration)). The defaults are tuned for the OpenClaw layout.
 
 ## Development
 
@@ -161,6 +193,30 @@ memory-doctor compact --apply
 memory-doctor lint
 ```
 
+## Why not other tools?
+
+- **mem0, Letta, and hosted memory layers** are built for apps you are shipping, usually behind an API or a server. Memory Doctor is for the agent CLIs you already run, and it never owns your memory. Your cards stay plain markdown on disk, readable and editable without it, and Memory Doctor only checks and tidies what is already there.
+- **A harness's own auto-memory** keeps writing to a silo without review and has no concept of dead links or a read-limit cliff. Memory Doctor adds the linter, the byte-aware threshold, and the dry-run-by-default mutations the built-in memory never gave you.
+- **A hand-rolled shell script or pre-commit hook** is exactly the thing this replaces. Memory Doctor gives you the dead-link linter, the non-lossy compactor, and the handoff ingester as one tested CLI with a stable exit-code contract, instead of glue you maintain forever.
+- **A daemon or background watcher** would be simpler to demo and worse to trust. Memory Doctor only runs when you run a verb, writes nothing without `--apply`, and makes no network calls.
+
+## What memory-doctor is not
+
+Memory Doctor is not a memory store, a hosted service, or a background agent.
+
+It does not:
+
+- run in the background, watch files, or install schedulers
+- make network calls or handle credentials
+- write anything without an explicit `--apply` (`status` and `lint` never write at all)
+- invent or summarize memory content; it checks links, tracks size, moves handoffs, and tightens overlong index lines without losing any pointer
+
+What it edits is mechanical and reversible. The content of your memory is yours to curate.
+
 ## License
 
-MIT
+MIT. See [LICENSE](LICENSE).
+
+---
+
+Project identity: GitHub [`escoffier-labs/memory-doctor`](https://github.com/escoffier-labs/memory-doctor), website [memory-doctor.escoffierlabs.dev](https://memory-doctor.escoffierlabs.dev), PyPI [`memory-doctor`](https://pypi.org/project/memory-doctor/), command `memory-doctor`.
