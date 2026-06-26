@@ -19,5 +19,6 @@ Closes #
 - [ ] Added or updated tests covering the change
 - [ ] Mutations stay dry-run by default; `--apply` is still required to write
 - [ ] No real personal memory in tests or fixtures (synthetic samples only)
+- [ ] No PII, secrets, real hostnames, home paths, or private IPs in the diff (example IPs use `192.0.2.x`)
 - [ ] Updated `CHANGELOG.md` for any user-visible effect
 - [ ] Conventional commit messages, no AI co-authorship trailers
