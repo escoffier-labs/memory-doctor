@@ -1,0 +1,36 @@
+name: Bug report
+description: memory-doctor reported the wrong thing, mangled memory, or errored
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Use a synthetic sample.** Don't paste real personal memory; a tiny made-up `MEMORY.md` + a card or two that reproduces is ideal.
+  - type: input
+    id: version
+    attributes:
+      label: memory-doctor version
+      placeholder: "0.2.0 (memory-doctor --version)"
+    validations:
+      required: true
+  - type: dropdown
+    id: verb
+    attributes:
+      label: Which command
+      options: [status, lint, ingest, compact, init-git]
+    validations:
+      required: true
+  - type: textarea
+    id: layout
+    attributes:
+      label: Memory layout (synthetic)
+      description: The smallest MEMORY.md / cards that reproduce it.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected vs. actual
+    validations:
+      required: true
