@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- README now leads with a recorded terminal demo (`docs/assets/memory-doctor-check.svg`, reproducible from `memory-doctor-check.cast`) of `status` + `lint`, and adds `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`, and issue / pull-request templates.
+
 - `compact` normalizes unicode punctuation (em dash, en dash, horizontal bar, and the arrow / >= / <= / approx / middot glyphs) to ASCII on every line it rewrites plus a final whole-file pass on apply. Link targets are left untouched.
 - `compact` no longer gives up with "No multi-line entries to flatten" when there are overlong single-line hooks or unicode to scrub. The "no action needed" message now prints only when MEMORY.md is genuinely clean and under both thresholds.
 

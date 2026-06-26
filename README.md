@@ -12,6 +12,12 @@ memory-doctor init-git            # initialize the memory dir as a git repo (one
 
 `ingest` and `compact` default to dry-run; pass `--apply` to actually write.
 
+<p align="center">
+  <img src="docs/assets/memory-doctor-check.svg" alt="Recording: memory-doctor status summarizes the memory dir, and memory-doctor lint catches a dead wiki-link" width="720">
+</p>
+
+`status` is a read-only health summary; `lint` catches dead `[[wiki-links]]` before your agent's memory rots, and exits non-zero so CI or a pre-commit hook can gate on it.
+
 ## Install
 
 ```bash
