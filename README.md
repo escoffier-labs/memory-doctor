@@ -25,6 +25,12 @@
   <img src="https://img.shields.io/badge/license-MIT-green?style=for-the-badge" alt="MIT license">
 </p>
 
+<p align="center">
+  <img src="docs/assets/memory-doctor-check.svg" alt="Recording: memory-doctor status summarizes the memory dir, and memory-doctor lint catches a dead wiki-link" width="720">
+</p>
+
+`status` is a read-only health summary; `lint` catches dead `[[wiki-links]]` before your agent's memory rots, and exits non-zero so CI or a pre-commit hook can gate on it.
+
 ## What it does
 
 Memory Doctor is a maintenance CLI for the **file-based agent memory** that Claude Code and OpenClaw keep on disk: the cards, the MEMORY.md index, and the handoff inbox your AI coding agents read and write every session. Left alone, that memory rots. Links to deleted cards go dead, the index grows past the harness read limit and the tail goes invisible to the agent, and handoffs pile up in the inbox unprocessed. Memory Doctor catches all three. It is read-only by default, makes no network calls, and handles no credentials. Five verbs:
@@ -38,12 +44,6 @@ memory-doctor init-git            # initialize the memory dir as a git repo (one
 ```
 
 `ingest` and `compact` default to dry-run; pass `--apply` to actually write.
-
-<p align="center">
-  <img src="docs/assets/memory-doctor-check.svg" alt="Recording: memory-doctor status summarizes the memory dir, and memory-doctor lint catches a dead wiki-link" width="720">
-</p>
-
-`status` is a read-only health summary; `lint` catches dead `[[wiki-links]]` before your agent's memory rots, and exits non-zero so CI or a pre-commit hook can gate on it.
 
 ## Install
 
@@ -85,17 +85,6 @@ memory-doctor compact --apply       # actually write
 ```
 
 Point it at any memory layout with `--memory-dir` / `--handoffs-dir` or the matching env vars (see [Configuration](#configuration)). The defaults are tuned for the OpenClaw layout.
-
-## Development
-
-Install test dependencies and run the suite:
-
-```bash
-python3 -m pip install -e '.[dev]'
-python3 -m pytest -q
-```
-
-The repo config points pytest at `src/`, so tests also run from a plain checkout without an editable install as long as pytest is available.
 
 ## Configuration
 
@@ -192,6 +181,17 @@ memory-doctor compact --apply
 # Pre-push hook:
 memory-doctor lint
 ```
+
+## Development
+
+Install test dependencies and run the suite:
+
+```bash
+python3 -m pip install -e '.[dev]'
+python3 -m pytest -q
+```
+
+The repo config points pytest at `src/`, so tests also run from a plain checkout without an editable install as long as pytest is available.
 
 ## Why not other tools?
 
