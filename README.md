@@ -19,10 +19,10 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/github/actions/workflow/status/escoffier-labs/memory-doctor/ci.yml?branch=master&style=for-the-badge&label=ci" alt="CI status">
-  <img src="https://img.shields.io/pypi/v/memory-doctor?style=for-the-badge&label=pypi" alt="PyPI version">
-  <img src="https://img.shields.io/badge/python-3.10%2B-blue?style=for-the-badge&logo=python&logoColor=white" alt="Python 3.10+">
-  <img src="https://img.shields.io/badge/license-MIT-green?style=for-the-badge" alt="MIT license">
+  <img src="https://shieldcn.dev/github/ci/escoffier-labs/memory-doctor.svg?branch=master&workflow=ci.yml" alt="CI status">
+  <img src="https://shieldcn.dev/pypi/memory-doctor.svg" alt="PyPI version">
+  <img src="https://shieldcn.dev/badge/python-3.10%2B-blue.svg?logo=python&logoColor=white" alt="Python 3.10+">
+  <img src="https://shieldcn.dev/badge/license-MIT-green.svg" alt="MIT license">
 </p>
 
 <p align="center">
