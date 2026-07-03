@@ -29,6 +29,8 @@
   <img src="docs/assets/memory-doctor-check.svg" alt="Recording: memory-doctor status summarizes the memory dir, and memory-doctor lint catches a dead wiki-link" width="720">
 </p>
 
+<p align="center"><em><code>memory-doctor status</code> sizes the card store and <code>lint</code> catches a dead wiki-link.</em></p>
+
 `status` is a read-only health summary; `lint` catches dead `[[wiki-links]]` before your agent's memory rots, and exits non-zero so CI or a pre-commit hook can gate on it.
 
 ## What it does
