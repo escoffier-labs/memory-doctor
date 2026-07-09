@@ -33,6 +33,18 @@
 
 `status` is a read-only health summary; `lint` catches dead `[[wiki-links]]` before your agent's memory rots, and exits non-zero so CI or a pre-commit hook can gate on it.
 
+> **Retired as a standalone package.** Memory Doctor verbs ship inside [brigade-cli](https://github.com/escoffier-labs/brigade):
+>
+> ```bash
+> pipx install brigade-cli
+> brigade memory status
+> brigade memory lint
+> brigade memory compact
+> brigade ingest   # handoff promotion
+> ```
+>
+> This repository remains for history and migration notes. Prefer Brigade for new installs.
+
 ## What it does
 
 Memory Doctor is a maintenance CLI for the **file-based agent memory** that Claude Code and OpenClaw keep on disk: the cards, the MEMORY.md index, and the handoff inbox your AI coding agents read and write every session. Left alone, that memory rots. Links to deleted cards go dead, the index grows past the harness read limit and the tail goes invisible to the agent, and handoffs pile up in the inbox unprocessed. Memory Doctor catches all three. It is read-only by default, makes no network calls, and handles no credentials. Five verbs:
