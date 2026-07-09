@@ -5,80 +5,48 @@
 <h1 align="center">Memory Doctor</h1>
 
 <p align="center">
-  <strong>Maintenance CLI that keeps the file-based memory your AI coding agents share from rotting: status, lint, ingest, and compact for the Claude Code / OpenClaw memory system. Dry-run by default, with optional git commit receipts so every write is reviewable. Unlike a hosted memory service or a per-tool silo, your memory stays plain markdown on disk that you can grep, diff, and revert.</strong>
+  <img src="docs/assets/marks/memory-doctor-circle.svg" alt="" width="40" height="40">
 </p>
 
 <p align="center">
-  <a href="https://memory-doctor.escoffierlabs.dev"><strong>Website</strong></a>
-  &nbsp;&middot;&nbsp;
-  <a href="#install">Install</a>
-  &nbsp;&middot;&nbsp;
-  <a href="#what-each-verb-does">Verbs</a>
-  &nbsp;&middot;&nbsp;
-  <a href="#why-not-other-tools">Why not other tools</a>
+  <strong>Agent memory rots quietly. Doctor checks it before sessions pay the cost.</strong>
+</p>
+
+<p align="center">
+  Maintenance CLI for file-based agent memory: status, lint, ingest, compact for Claude Code and OpenClaw layouts. Much of this is now embedded in brigade-cli as brigade memory.
+</p>
+
+<p align="center">
+  <a href="https://brigade.tools/memory-doctor">Website</a> &middot; <a href="#install">Install</a> &middot; <a href="https://github.com/escoffier-labs/brigade">brigade memory (embedded)</a>
 </p>
 
 <p align="center">
   <img src="https://shieldcn.dev/github/ci/escoffier-labs/memory-doctor.svg?branch=master&workflow=ci.yml" alt="CI status">
-  <img src="https://shieldcn.dev/pypi/memory-doctor.svg" alt="PyPI version">
-  <img src="https://shieldcn.dev/badge/python-3.10%2B-blue.svg?logo=python&logoColor=white" alt="Python 3.10+">
   <img src="https://shieldcn.dev/badge/license-MIT-green.svg" alt="MIT license">
 </p>
-
-<p align="center">
-  <img src="docs/assets/memory-doctor-check.svg" alt="Recording: memory-doctor status summarizes the memory dir, and memory-doctor lint catches a dead wiki-link" width="720">
-</p>
-
-<p align="center"><em><code>memory-doctor status</code> sizes the card store and <code>lint</code> catches a dead wiki-link.</em></p>
-
-`status` is a read-only health summary; `lint` catches dead `[[wiki-links]]` before your agent's memory rots, and exits non-zero so CI or a pre-commit hook can gate on it.
-
-> **Retired as a standalone package.** Memory Doctor verbs ship inside [brigade-cli](https://github.com/escoffier-labs/brigade):
->
-> ```bash
-> pipx install brigade-cli
-> brigade memory status
-> brigade memory lint
-> brigade memory compact
-> brigade ingest   # handoff promotion
-> ```
->
-> This repository remains for history and migration notes. Prefer Brigade for new installs.
-
-## What it does
-
-Memory Doctor is a maintenance CLI for the **file-based agent memory** that Claude Code and OpenClaw keep on disk: the cards, the MEMORY.md index, and the handoff inbox your AI coding agents read and write every session. Left alone, that memory rots. Links to deleted cards go dead, the index grows past the harness read limit and the tail goes invisible to the agent, and handoffs pile up in the inbox unprocessed. Memory Doctor catches all three. It is read-only by default, makes no network calls, and handles no credentials. Five verbs:
-
-```
-memory-doctor status              # read-only summary
-memory-doctor lint                # find dead [[wiki-links]]; exit 1 if any
-memory-doctor ingest [--apply]    # promote pending handoffs into cards
-memory-doctor compact [--apply]   # flatten/tighten oversized MEMORY.md entries into topic files
-memory-doctor init-git            # initialize the memory dir as a git repo (one-time)
-```
-
-`ingest` and `compact` default to dry-run; pass `--apply` to actually write.
 
 ## Install
 
 ```bash
-pipx install memory-doctor
+# Preferred path: embedded in Brigade
+pipx install brigade-cli
+brigade memory status
+brigade memory lint
+brigade memory compact
+
+# Standalone (legacy package)
+pipx install memory-doctor   # if published; else clone this repo
 ```
 
-Or straight from the repo:
+## What it does
 
-```bash
-pipx install git+https://github.com/escoffier-labs/memory-doctor
-```
+| | Job | What you get |
+|---|---|---|
+| **Status** | See the footprint | Cards, index size, pending handoffs |
+| **Lint** | Catch dead links | Broken wiki links and stale structure |
+| **Compact** | Stay under budget | Flatten bloated MEMORY.md into topic cards |
+| **Ingest** | Promote handoffs | Bridge notes into durable memory carefully |
 
-Or from a local clone:
-
-```bash
-git clone https://github.com/escoffier-labs/memory-doctor && cd memory-doctor
-pipx install .
-```
-
-Requires Python 3.10+. One runtime dependency: `brigade-cli>=0.8.0` (used for the canonical MEMORY.md line threshold).
 
 ## Quickstart
 
