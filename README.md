@@ -47,6 +47,10 @@ pipx install memory-doctor   # if published; else clone this repo
 | **Compact** | Stay under budget | Flatten bloated MEMORY.md into topic cards |
 | **Ingest** | Promote handoffs | Bridge notes into durable memory carefully |
 
+![Memory Doctor memory care workflow](docs/assets/memory-care-workflow.svg)
+
+Generated from [`docs/assets/workflows/memory-care.json`](docs/assets/workflows/memory-care.json) with `plating workflow`.
+
 
 ## Quickstart
 
