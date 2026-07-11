@@ -1,0 +1,85 @@
+{
+  "title": "From memory drift to reviewed durable cards",
+  "eyebrow": "MEMORY-DOCTOR WORKFLOW",
+  "description": "Read-only checks find drift; dry-run verbs preview changes before anything writes.",
+  "meta": "status · lint · ingest · compact",
+  "columns": [
+    {
+      "title": "CHECK",
+      "nodes": [
+        {
+          "id": "status",
+          "label": "status",
+          "detail": "size · counts · age"
+        },
+        {
+          "id": "lint",
+          "label": "lint",
+          "detail": "dead wiki links"
+        }
+      ]
+    },
+    {
+      "title": "PLAN",
+      "nodes": [
+        {
+          "id": "ingest",
+          "label": "ingest dry-run",
+          "detail": "pending handoffs",
+          "kind": "focus",
+          "badge": "preview"
+        },
+        {
+          "id": "compact",
+          "label": "compact dry-run",
+          "detail": "over-budget index"
+        }
+      ]
+    },
+    {
+      "title": "WRITE",
+      "nodes": [
+        {
+          "id": "apply",
+          "label": "--apply",
+          "detail": "atomic writes only",
+          "kind": "accent"
+        },
+        {
+          "id": "commit",
+          "label": "--commit",
+          "detail": "pre-flight checks"
+        }
+      ]
+    },
+    {
+      "title": "MEMORY",
+      "nodes": [
+        {
+          "id": "cards",
+          "label": "topic cards",
+          "detail": "durable knowledge",
+          "kind": "success"
+        },
+        {
+          "id": "index",
+          "label": "MEMORY.md",
+          "detail": "agent-readable index"
+        }
+      ]
+    }
+  ],
+  "edges": [
+    {"from": "status", "to": "ingest"},
+    {"from": "lint", "to": "compact"},
+    {"from": "ingest", "to": "apply"},
+    {"from": "compact", "to": "apply"},
+    {"from": "apply", "to": "cards"},
+    {"from": "commit", "to": "index"}
+  ],
+  "context": {
+    "title": "SAFETY CONTRACT",
+    "body": "ingest and compact are dry-run by default; --apply is the write boundary.",
+    "detail": "Development checks must use temp memory dirs, not live operator memory."
+  }
+}
