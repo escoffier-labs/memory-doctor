@@ -20,10 +20,17 @@ def is_git_repo(memory_dir: Path) -> bool:
     """
     if not memory_dir.exists():
         return False
-    result = subprocess.run(
-        ["git", "-C", str(memory_dir), "rev-parse", "--show-toplevel"],
-        capture_output=True, text=True, check=False,
-    )
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(memory_dir), "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True, check=False,
+        )
+    except OSError:
+        # No git binary on PATH: not a git repo as far as this tool can tell.
+        # This gates ALL other git helpers (they are only called after a True
+        # here), so a git-less environment degrades to non-repo behavior
+        # instead of crashing.
+        return False
     if result.returncode != 0:
         return False
     toplevel = Path(result.stdout.strip()).resolve()

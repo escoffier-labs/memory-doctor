@@ -51,3 +51,22 @@ def test_init_git_initial_commit_message_format(memory_dir, handoffs_dir):
     assert subject.startswith("memory: initial import (")
     assert " cards" in subject
     assert "MEMORY.md" in subject
+
+
+def test_init_git_writes_gitignore_atomically(memory_dir, handoffs_dir, monkeypatch):
+    # Regression: .gitignore creation must go through atomic_write_text, not
+    # raw Path.write_text (AGENTS.md hard rule for all file mutations).
+    from memory_doctor import init_git as init_git_mod
+
+    calls: list[Path] = []
+    real = init_git_mod.atomic_write_text
+
+    def spy(path: Path, content: str) -> None:
+        calls.append(path)
+        real(path, content)
+
+    monkeypatch.setattr(init_git_mod, "atomic_write_text", spy)
+    rc = init_git_run(_make_cfg(memory_dir, handoffs_dir))
+    assert rc == 0
+    assert memory_dir / ".gitignore" in calls
+    assert (memory_dir / ".gitignore").read_text() == ""

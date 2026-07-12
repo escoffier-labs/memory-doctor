@@ -187,6 +187,24 @@ def run(
         rc = _preflight_for_commit(cfg.memory_dir, planned, commit_author)
         if rc != 0:
             return rc
+    elif apply and is_git_repo(cfg.memory_dir):
+        # Same dirty-tree protection as the --commit pre-flight: a plain
+        # --apply over uncommitted card edits (especially with --force) would
+        # destroy them with no committed baseline to recover from.
+        planned = _plan_targets(pending, cfg.memory_dir)
+        dirty = files_have_uncommitted_changes(cfg.memory_dir, planned)
+        if dirty:
+            print(
+                "memory-doctor: refusing to apply, target files have uncommitted local changes:",
+                file=sys.stderr,
+            )
+            for path, status in dirty:
+                print(f"  - {path.name} ({status})", file=sys.stderr)
+            print(
+                "  fix: review with `git diff`, commit/stash/discard, then retry",
+                file=sys.stderr,
+            )
+            return 2
 
     mode = "APPLY" if apply else "dry-run"
     print(f"memory-doctor ingest ({mode}): {len(pending)} handoff(s)")

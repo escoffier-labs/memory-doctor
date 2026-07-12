@@ -46,6 +46,38 @@ def _has_normalizable(text: str) -> bool:
     return any(src in text for src in UNICODE_NORMALIZATION)
 
 
+def _normalize_index_line(line: str) -> str:
+    """Normalize unicode in the VISIBLE parts of an index line only.
+
+    Bullet lines keep their link target byte-for-byte (the documented
+    contract above); every other line is normalized whole.
+    """
+    m = BULLET_RE.match(line)
+    if not m:
+        return _normalize_unicode(line)
+    rebuilt = (
+        f"- [{_normalize_unicode(m.group(1))}]({m.group(2)}) "
+        f"{_normalize_unicode(m.group(3))}"
+    )
+    return rebuilt.rstrip()
+
+
+def _index_has_normalizable(text: str) -> bool:
+    """True if any VISIBLE index text would be rewritten by the normalizer.
+
+    Mirrors _normalize_index_line: unicode inside a bullet's link target does
+    not count, so compact never reports work it would refuse to do.
+    """
+    for line in text.splitlines():
+        m = BULLET_RE.match(line)
+        if m:
+            if _has_normalizable(m.group(1)) or _has_normalizable(m.group(3)):
+                return True
+        elif _has_normalizable(line):
+            return True
+    return False
+
+
 def _flatten_marker(today: str, flatten: "Flatten") -> str:
     """Stable marker so re-applying the same flatten plan is idempotent.
 
@@ -134,7 +166,10 @@ def plan_compaction(
 ) -> CompactionPlan:
     index_path = memory_dir / "MEMORY.md"
     raw = index_path.read_bytes() if index_path.exists() else b""
-    lines = raw.decode("utf-8", errors="replace").splitlines() if raw else []
+    # Strict decode: raises UnicodeDecodeError on invalid UTF-8. A lossy
+    # errors="replace" decode here would let apply persist U+FFFD bytes and
+    # permanently corrupt the index; run() catches this and aborts instead.
+    lines = raw.decode("utf-8").splitlines() if raw else []
     flattens: list[Flatten] = []
     tightens: list[Tighten] = []
     missing: list[str] = []
@@ -235,10 +270,10 @@ def _rewrite_index_lines(
             t = tighten_by_index[idx]
             m = BULLET_RE.match(line)
             if m:
-                prefix = f"- [{m.group(1)}]({m.group(2)}) "
-                out.append(_normalize_unicode(prefix) + t.short_hook)
+                prefix = f"- [{_normalize_unicode(m.group(1))}]({m.group(2)}) "
+                out.append(prefix + t.short_hook)
                 continue
-        out.append(_normalize_unicode(line))
+        out.append(_normalize_index_line(line))
     return out
 
 
@@ -255,7 +290,7 @@ def _projected_index_bytes(
 
 def _apply_flatten(memory_dir: Path, plan: CompactionPlan) -> None:
     index_path = memory_dir / "MEMORY.md"
-    lines = index_path.read_bytes().decode("utf-8", errors="replace").splitlines()
+    lines = index_path.read_bytes().decode("utf-8").splitlines()
     today = dt.date.today().isoformat()
 
     applied: list[Flatten] = []
@@ -266,7 +301,7 @@ def _apply_flatten(memory_dir: Path, plan: CompactionPlan) -> None:
             target_path = resolve_card_target(memory_dir, flatten.target_name)
         except UnsafeTargetError:
             continue
-        existing = target_path.read_text()
+        existing = target_path.read_text(encoding="utf-8")
         marker = _flatten_marker(today, flatten)
         if marker in existing:
             # Already applied for this title/date - skip the topic append but
@@ -295,7 +330,7 @@ def _apply_flatten(memory_dir: Path, plan: CompactionPlan) -> None:
             # Dangling link: index may be the only record. Do not move; the
             # whole-file normalization pass below still scrubs unicode in place.
             continue
-        existing = target_path.read_text()
+        existing = target_path.read_text(encoding="utf-8")
         marker = _tighten_marker(today, tighten)
         if marker not in existing:
             sep = "" if existing.endswith("\n\n") else ("\n" if existing.endswith("\n") else "\n\n")
@@ -334,10 +369,19 @@ def run(
         print(f"memory-doctor compact: {index_path} does not exist")
         return 0
 
-    plan = plan_compaction(cfg.memory_dir, cfg.max_lines, max_hook_chars=cfg.max_hook_chars)
+    try:
+        plan = plan_compaction(cfg.memory_dir, cfg.max_lines, max_hook_chars=cfg.max_hook_chars)
+    except UnicodeDecodeError as e:
+        print(
+            f"memory-doctor compact: {index_path} is not valid UTF-8 "
+            f"(bad byte at offset {e.start}); refusing to touch it\n"
+            f"  fix: repair the file's encoding manually, then retry",
+            file=sys.stderr,
+        )
+        return 2
 
-    index_text = index_path.read_bytes().decode("utf-8", errors="replace")
-    has_unicode = _has_normalizable(index_text)
+    index_text = index_path.read_bytes().decode("utf-8")
+    has_unicode = _index_has_normalizable(index_text)
     over_lines = plan.original_lines > cfg.max_lines
     over_bytes = plan.original_bytes > cfg.max_bytes
     has_work = bool(plan.flattens) or bool(plan.tightens) or has_unicode
@@ -422,19 +466,45 @@ def run(
                 file=sys.stderr,
             )
             return 2
+
+    # Dirty-tree pre-flight runs for EVERY apply in a git-managed memory dir,
+    # not just --commit: applying over uncommitted edits would bury them in
+    # the rewrite with no committed baseline to diff or revert against.
+    if is_git_repo(cfg.memory_dir):
         card_targets = [cfg.memory_dir / f.target_name for f in plan.flattens] + [
             cfg.memory_dir / t.target_name for t in plan.tightens
         ]
         planned = card_targets + [index_path]
         dirty = files_have_uncommitted_changes(cfg.memory_dir, planned)
         if dirty:
+            action = "commit" if commit else "apply"
             print(
-                "memory-doctor: refusing to commit, target files have uncommitted local changes:",
+                f"memory-doctor: refusing to {action}, target files have uncommitted local changes:",
                 file=sys.stderr,
             )
             for path, status in dirty:
                 print(f"  - {path.name} ({status})", file=sys.stderr)
             print("  fix: review with `git diff`, commit/stash/discard, then retry", file=sys.stderr)
+            return 2
+
+    # Pre-flight failures must abort before any write: validate every target
+    # card we are about to append to is readable as UTF-8 up front, instead of
+    # crashing mid-apply with some cards already rewritten.
+    for name in sorted(
+        {f.target_name for f in plan.flattens} | {t.target_name for t in plan.tightens}
+    ):
+        card_path = cfg.memory_dir / name
+        if not card_path.exists():
+            continue
+        try:
+            card_path.read_bytes().decode("utf-8")
+        except UnicodeDecodeError as e:
+            print(
+                f"memory-doctor compact: {card_path} is not valid UTF-8 "
+                f"(bad byte at offset {e.start}); refusing to touch it\n"
+                f"  fix: repair the file's encoding manually, then retry",
+                file=sys.stderr,
+            )
             return 2
 
     _apply_flatten(cfg.memory_dir, plan)

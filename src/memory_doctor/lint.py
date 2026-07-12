@@ -1,11 +1,15 @@
-"""Lint verb: dead [[wiki-link]] scanner."""
+"""Lint verb: dead-link scanner for cards ([[wiki-links]]) and MEMORY.md
+(markdown bullet targets plus wiki links)."""
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
 from memory_doctor.parsing import extract_wiki_links
 from memory_doctor.paths import PathConfig
+
+MD_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 
 
 @dataclass(frozen=True)
@@ -13,6 +17,7 @@ class DeadLink:
     source: Path
     link: str
     suggestion: str | None
+    kind: str = "wiki"  # 'wiki' ([[...]]) or 'index' (markdown link in MEMORY.md)
 
 
 def _existing_card_slugs(memory_dir: Path) -> set[str]:
@@ -46,6 +51,26 @@ def suggest_closest(needle: str, pool: list[str], max_distance: int = 3) -> str 
     return best[1] if best else None
 
 
+def _index_link_targets(text: str) -> list[str]:
+    """Local card targets of markdown links in MEMORY.md.
+
+    Skips external URLs, anchors, mailto:, and nested paths (other than the
+    conventional 'cards/' prefix, which is stripped): those are not card
+    references and would only produce false positives.
+    """
+    targets: list[str] = []
+    for m in MD_LINK_RE.finditer(text):
+        target = m.group(2).strip()
+        if "://" in target or target.startswith(("#", "mailto:")):
+            continue
+        if target.startswith("cards/"):
+            target = target[len("cards/"):]
+        if "/" in target or not target.endswith(".md"):
+            continue
+        targets.append(target)
+    return targets
+
+
 def scan_dead_links(memory_dir: Path) -> list[DeadLink]:
     slugs = _existing_card_slugs(memory_dir)
     pool = sorted(slugs)
@@ -60,6 +85,24 @@ def scan_dead_links(memory_dir: Path) -> list[DeadLink]:
                 continue
             suggestion = suggest_closest(slug, pool)
             out.append(DeadLink(source=p, link=raw_link, suggestion=suggestion))
+
+    index_path = memory_dir / "MEMORY.md"
+    if index_path.exists():
+        text = index_path.read_text(errors="replace")
+        for raw_link in extract_wiki_links(text):
+            slug = raw_link.lower().removesuffix(".md")
+            if slug not in slugs:
+                out.append(DeadLink(
+                    source=index_path, link=raw_link,
+                    suggestion=suggest_closest(slug, pool),
+                ))
+        for target in _index_link_targets(text):
+            slug = target.lower().removesuffix(".md")
+            if slug not in slugs:
+                out.append(DeadLink(
+                    source=index_path, link=target,
+                    suggestion=suggest_closest(slug, pool), kind="index",
+                ))
     return out
 
 
@@ -78,6 +121,7 @@ def run(cfg: PathConfig) -> int:
             print(f"\n{f.source.name}")
             current = f.source
         sug = f"  (did you mean {f.suggestion}?)" if f.suggestion else ""
-        print(f"  [[{f.link}]] - no card found{sug}")
+        shown = f"({f.link})" if f.kind == "index" else f"[[{f.link}]]"
+        print(f"  {shown} - no card found{sug}")
     print(f"\nmemory-doctor lint: {len(findings)} dead link(s)")
     return 1
