@@ -210,3 +210,50 @@ def test_ingest_commit_invalid_author_refuses_before_writes(git_memory_dir, hand
         capture_output=True, text=True, check=True,
     ).stdout
     assert status == ""
+
+
+# --- reserved targets ---
+
+def test_ingest_rejects_memory_index_target(memory_dir, handoffs_dir, capsys):
+    write_handoff(handoffs_dir, "h-evil.md", action="create-card",
+                  target="MEMORY.md", content="injected content")
+    code = run(cfg(memory_dir, handoffs_dir), apply=True, force=True)
+    assert code == 1
+    assert not (memory_dir / "MEMORY.md").exists()
+    assert "unsafe target" in capsys.readouterr().out
+    assert (handoffs_dir / "h-evil.md").exists()
+
+
+# --- dirty-tree protection on plain --apply ---
+
+def _commit_all(memory_dir):
+    subprocess.run(["git", "-C", str(memory_dir), "add", "-A"], check=True)
+    subprocess.run(
+        ["git", "-C", str(memory_dir), "commit", "--quiet", "-m", "setup"],
+        check=True,
+    )
+
+
+def test_plain_apply_refuses_dirty_target_card(git_memory_dir, handoffs_dir, capsys):
+    memory_dir = git_memory_dir
+    (memory_dir / "existing.md").write_text("original\n")
+    _commit_all(memory_dir)
+    (memory_dir / "existing.md").write_text("original\nlocal uncommitted edit\n")
+    write_handoff(handoffs_dir, "h-dirty.md", action="update-card",
+                  target="existing.md", content="appended")
+    code = run(cfg(memory_dir, handoffs_dir), apply=True, force=False)
+    assert code == 2
+    assert "refusing to apply" in capsys.readouterr().err
+    assert "local uncommitted edit" in (memory_dir / "existing.md").read_text()
+    assert (handoffs_dir / "h-dirty.md").exists()
+
+
+def test_plain_apply_proceeds_on_clean_tree(git_memory_dir, handoffs_dir):
+    memory_dir = git_memory_dir
+    (memory_dir / "existing.md").write_text("original\n")
+    _commit_all(memory_dir)
+    write_handoff(handoffs_dir, "h-clean.md", action="update-card",
+                  target="existing.md", content="appended")
+    code = run(cfg(memory_dir, handoffs_dir), apply=True, force=False)
+    assert code == 0
+    assert "appended" in (memory_dir / "existing.md").read_text()

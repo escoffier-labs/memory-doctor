@@ -6,6 +6,7 @@ import sys
 
 from memory_doctor.git import is_git_repo
 from memory_doctor.paths import PathConfig
+from memory_doctor.safety import atomic_write_text
 
 
 def run(cfg: PathConfig) -> int:
@@ -30,7 +31,7 @@ def run(cfg: PathConfig) -> int:
     # need later.
     gitignore = memory_dir / ".gitignore"
     if not gitignore.exists():
-        gitignore.write_text("")
+        atomic_write_text(gitignore, "")
 
     cards = sorted(p for p in memory_dir.glob("*.md") if p.name != "MEMORY.md")
     has_index = (memory_dir / "MEMORY.md").exists()

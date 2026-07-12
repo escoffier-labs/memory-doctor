@@ -256,3 +256,16 @@ def test_rollback_files_safe_on_missing_file(git_memory_dir):
     # A file that was never written should silently no-op.
     rollback_files(git_memory_dir, [git_memory_dir / "never-existed.md"])
     # No assertion needed; just verify no exception.
+
+
+def test_is_git_repo_false_when_git_binary_missing(memory_dir, monkeypatch):
+    # A git-less environment must degrade to "not a repo", not crash: plain
+    # --apply now calls is_git_repo, which gates every other git helper.
+    import subprocess as subprocess_mod
+    from memory_doctor import git as git_mod
+
+    def raise_missing(*args, **kwargs):
+        raise FileNotFoundError("git: command not found")
+
+    monkeypatch.setattr(git_mod.subprocess, "run", raise_missing)
+    assert git_mod.is_git_repo(memory_dir) is False

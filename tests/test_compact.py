@@ -473,3 +473,115 @@ def test_compact_truly_nothing_to_do_message(memory_dir, handoffs_dir, capsys):
     assert code == 0
     out = capsys.readouterr().out
     assert "no action needed" in out.lower()
+
+
+# --- non-UTF-8 refusal ---
+
+def test_compact_refuses_non_utf8_index(memory_dir, handoffs_dir, capsys):
+    index = memory_dir / "MEMORY.md"
+    index.write_bytes(b"# Memory Index\n- entry \xff\xfe broken\n")
+    original = index.read_bytes()
+    code = run(cfg(memory_dir, handoffs_dir), apply=True)
+    assert code == 2
+    assert index.read_bytes() == original
+    assert "not valid UTF-8" in capsys.readouterr().err
+
+
+def test_compact_refuses_non_utf8_target_card(memory_dir, handoffs_dir, capsys):
+    card = memory_dir / "topic-b.md"
+    card.write_bytes(b"# Topic B\n\xff\xfe\n")
+    write_memory_index(memory_dir, [
+        "- [topic-b](topic-b.md) - first line",
+        "  detail line to flatten",
+    ])
+    original_card = card.read_bytes()
+    original_index = (memory_dir / "MEMORY.md").read_bytes()
+    code = run(cfg(memory_dir, handoffs_dir, max_lines=1), apply=True)
+    assert code == 2
+    assert card.read_bytes() == original_card
+    assert (memory_dir / "MEMORY.md").read_bytes() == original_index
+    assert "not valid UTF-8" in capsys.readouterr().err
+
+
+# --- link-target preservation ---
+
+def test_compact_preserves_link_targets_on_normalize(memory_dir, handoffs_dir):
+    # Em dash in the link TARGET must survive apply; title and hook text
+    # (the visible parts) are normalized.
+    write_card(memory_dir, "topic—x", "body")
+    write_memory_index(memory_dir, [
+        "- [topic—x](topic—x.md) hook with em — dash",
+    ])
+    code = run(cfg(memory_dir, handoffs_dir, max_lines=180), apply=True)
+    assert code == 0
+    text = (memory_dir / "MEMORY.md").read_text()
+    assert "(topic—x.md)" in text
+    assert "em - dash" in text
+    assert text.startswith("- [topic-x](topic—x.md)")
+
+
+def test_compact_noop_when_unicode_only_in_link_target(memory_dir, handoffs_dir, capsys):
+    write_card(memory_dir, "topic—x", "body")
+    write_memory_index(memory_dir, ["- [topic-x](topic—x.md) clean hook"])
+    code = run(cfg(memory_dir, handoffs_dir, max_lines=180), apply=True)
+    assert code == 0
+    assert "no action needed" in capsys.readouterr().out
+
+
+# --- dirty-tree protection on plain --apply ---
+
+import subprocess
+
+
+def _commit_all(memory_dir):
+    subprocess.run(["git", "-C", str(memory_dir), "add", "-A"], check=True)
+    subprocess.run(
+        ["git", "-C", str(memory_dir), "commit", "--quiet", "-m", "setup"],
+        check=True,
+    )
+
+
+def test_plain_apply_refuses_dirty_index(git_memory_dir, handoffs_dir, capsys):
+    memory_dir = git_memory_dir
+    write_card(memory_dir, "topic-b", "## existing\nbody")
+    write_memory_index(memory_dir, [
+        "- [topic-b](topic-b.md) - first",
+        "  detail to flatten",
+    ])
+    _commit_all(memory_dir)
+    with (memory_dir / "MEMORY.md").open("a") as f:
+        f.write("- uncommitted local edit\n")
+    original = (memory_dir / "MEMORY.md").read_text()
+    code = run(cfg(memory_dir, handoffs_dir, max_lines=1), apply=True)
+    assert code == 2
+    assert (memory_dir / "MEMORY.md").read_text() == original
+    err = capsys.readouterr().err
+    assert "refusing to apply" in err
+    assert "MEMORY.md" in err
+
+
+def test_plain_apply_proceeds_on_clean_tree(git_memory_dir, handoffs_dir):
+    memory_dir = git_memory_dir
+    write_card(memory_dir, "topic-b", "## existing\nbody")
+    write_memory_index(memory_dir, [
+        "- [topic-b](topic-b.md) - first",
+        "  detail to flatten",
+    ])
+    _commit_all(memory_dir)
+    code = run(cfg(memory_dir, handoffs_dir, max_lines=1), apply=True)
+    assert code == 0
+    assert "detail to flatten" in (memory_dir / "topic-b.md").read_text()
+
+
+def test_compact_double_apply_reaches_fixed_point(memory_dir, handoffs_dir, capsys):
+    # Second apply after a normalization pass must be a no-op with identical bytes.
+    write_card(memory_dir, "topic-b", "body")
+    write_memory_index(memory_dir, ["- [topic-b](topic-b.md) hook with em — dash"])
+    code1 = run(cfg(memory_dir, handoffs_dir, max_lines=180), apply=True)
+    assert code1 == 0
+    after_first = (memory_dir / "MEMORY.md").read_bytes()
+    capsys.readouterr()
+    code2 = run(cfg(memory_dir, handoffs_dir, max_lines=180), apply=True)
+    assert code2 == 0
+    assert "no action needed" in capsys.readouterr().out
+    assert (memory_dir / "MEMORY.md").read_bytes() == after_first

@@ -57,3 +57,51 @@ def test_exit_code_zero_when_clean(memory_dir, handoffs_dir):
     cfg = PathConfig(memory_dir=memory_dir, handoffs_dir=handoffs_dir, max_lines=180)
     code = run(cfg)
     assert code == 0
+
+
+# --- MEMORY.md index scanning ---
+
+def test_index_dead_markdown_link_detected(memory_dir):
+    write_card(memory_dir, "alpha", "body")
+    (memory_dir / "MEMORY.md").write_text(
+        "# Memory Index\n- [Alpha](alpha.md) - fine\n- [Ghost](ghost.md) - dead\n"
+    )
+    findings = scan_dead_links(memory_dir)
+    assert len(findings) == 1
+    f = findings[0]
+    assert f.source.name == "MEMORY.md"
+    assert f.link == "ghost.md"
+    assert f.kind == "index"
+
+
+def test_index_cards_prefix_target_resolves(memory_dir):
+    write_card(memory_dir, "alpha", "body")
+    (memory_dir / "MEMORY.md").write_text("- [Alpha](cards/alpha.md) ok\n")
+    assert scan_dead_links(memory_dir) == []
+
+
+def test_index_external_links_ignored(memory_dir):
+    (memory_dir / "MEMORY.md").write_text(
+        "- [site](https://example.com/x.md) t\n"
+        "- [anchor](#section) t\n"
+        "- [mail](mailto:memory-card.md) t\n"
+        "- [nested](docs/notes.md) t\n"
+    )
+    assert scan_dead_links(memory_dir) == []
+
+
+def test_index_wiki_link_detected(memory_dir):
+    (memory_dir / "MEMORY.md").write_text("see [[ghost]] for details\n")
+    findings = scan_dead_links(memory_dir)
+    assert len(findings) == 1
+    assert findings[0].kind == "wiki"
+    assert findings[0].source.name == "MEMORY.md"
+
+
+def test_index_dead_wiki_link_gets_suggestion(memory_dir):
+    write_card(memory_dir, "beta", "content")
+    (memory_dir / "MEMORY.md").write_text("see [[betaa]]\n")
+    findings = scan_dead_links(memory_dir)
+    assert len(findings) == 1
+    assert findings[0].kind == "wiki"
+    assert findings[0].suggestion == "beta"

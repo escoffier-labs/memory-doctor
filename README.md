@@ -136,6 +136,8 @@ Pre-flight checks (any failure aborts the run, writes nothing):
 2. No uncommitted local changes on the files this verb would touch (protects in-flight manual edits).
 3. Git is not in the middle of a merge, rebase, cherry-pick, or bisect.
 
+Check 2 also runs on plain `--apply` (without `--commit`) whenever the memory dir is a git repo: applying over uncommitted edits would bury them with no committed baseline to diff against. Commit or stash first, then retry.
+
 Commit message shape:
 
 ```

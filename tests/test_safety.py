@@ -38,3 +38,53 @@ def test_rejects_nested_path(memory_dir: Path):
 def test_rejects_empty_string(memory_dir: Path):
     with pytest.raises(UnsafeTargetError):
         resolve_card_target(memory_dir, "")
+
+
+def test_rejects_memory_index_as_target(memory_dir: Path):
+    with pytest.raises(UnsafeTargetError):
+        resolve_card_target(memory_dir, "MEMORY.md")
+
+
+def test_rejects_memory_index_case_variants(memory_dir: Path):
+    for variant in ("memory.md", "Memory.md", "MEMORY.MD"):
+        with pytest.raises(UnsafeTargetError):
+            resolve_card_target(memory_dir, variant)
+
+
+def test_rejects_memory_index_with_cards_prefix(memory_dir: Path):
+    with pytest.raises(UnsafeTargetError):
+        resolve_card_target(memory_dir, "cards/MEMORY.md")
+
+
+def test_rejects_git_metadata_targets(memory_dir: Path):
+    for name in (".gitignore", ".git", ".gitattributes"):
+        with pytest.raises(UnsafeTargetError):
+            resolve_card_target(memory_dir, name)
+
+
+def test_rejects_backslash_targets(memory_dir: Path):
+    for name in (r"notes\.gitignore", r"sub\MEMORY.md", "a\\b.md"):
+        with pytest.raises(UnsafeTargetError):
+            resolve_card_target(memory_dir, name)
+
+
+def test_rejects_control_and_format_characters(memory_dir: Path):
+    for name in ("​MEMORY.md", "‮gitignore.md", "evil\x00.md", "​.gitignore"):
+        with pytest.raises(UnsafeTargetError):
+            resolve_card_target(memory_dir, name)
+
+
+def test_rejects_symlink_to_memory_index(memory_dir: Path):
+    (memory_dir / "MEMORY.md").write_text("index\n")
+    trick = memory_dir / "trick.md"
+    trick.symlink_to(memory_dir / "MEMORY.md")
+    with pytest.raises(UnsafeTargetError):
+        resolve_card_target(memory_dir, "trick.md")
+
+
+def test_rejects_symlink_to_another_card(memory_dir: Path):
+    (memory_dir / "real.md").write_text("real card\n")
+    alias = memory_dir / "alias.md"
+    alias.symlink_to(memory_dir / "real.md")
+    with pytest.raises(UnsafeTargetError):
+        resolve_card_target(memory_dir, "alias.md")
