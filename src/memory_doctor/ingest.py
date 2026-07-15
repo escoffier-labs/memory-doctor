@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 from memory_doctor.git import (
+    GitStatusError,
     commit_run,
     files_have_uncommitted_changes,
     is_git_repo,
@@ -122,7 +123,14 @@ def _preflight_for_commit(
         )
         return 2
 
-    dirty = files_have_uncommitted_changes(memory_dir, planned_targets)
+    try:
+        dirty = files_have_uncommitted_changes(memory_dir, planned_targets)
+    except GitStatusError as exc:
+        print(
+            f"memory-doctor: refusing to commit, git status failed:\n  {exc}",
+            file=sys.stderr,
+        )
+        return 2
     if dirty:
         print(
             "memory-doctor: refusing to commit, target files have uncommitted local changes:",
@@ -192,7 +200,14 @@ def run(
         # --apply over uncommitted card edits (especially with --force) would
         # destroy them with no committed baseline to recover from.
         planned = _plan_targets(pending, cfg.memory_dir)
-        dirty = files_have_uncommitted_changes(cfg.memory_dir, planned)
+        try:
+            dirty = files_have_uncommitted_changes(cfg.memory_dir, planned)
+        except GitStatusError as exc:
+            print(
+                f"memory-doctor: refusing to apply, git status failed:\n  {exc}",
+                file=sys.stderr,
+            )
+            return 2
         if dirty:
             print(
                 "memory-doctor: refusing to apply, target files have uncommitted local changes:",

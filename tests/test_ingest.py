@@ -257,3 +257,32 @@ def test_plain_apply_proceeds_on_clean_tree(git_memory_dir, handoffs_dir):
     code = run(cfg(memory_dir, handoffs_dir), apply=True, force=False)
     assert code == 0
     assert "appended" in (memory_dir / "existing.md").read_text()
+
+
+def test_plain_apply_reports_git_status_failure(
+    git_memory_dir, handoffs_dir, capsys, monkeypatch
+):
+    from memory_doctor.git import GitStatusError
+
+    memory_dir = git_memory_dir
+    (memory_dir / "existing.md").write_text("original\n")
+    _commit_all(memory_dir)
+    handoff = write_handoff(
+        handoffs_dir,
+        "h-status-failure.md",
+        action="update-card",
+        target="existing.md",
+        content="appended",
+    )
+
+    def fail_status(*args, **kwargs):
+        raise GitStatusError("fatal: status exploded")
+
+    monkeypatch.setattr("memory_doctor.ingest.files_have_uncommitted_changes", fail_status)
+
+    code = run(cfg(memory_dir, handoffs_dir), apply=True)
+
+    assert code == 2
+    assert "fatal: status exploded" in capsys.readouterr().err
+    assert (memory_dir / "existing.md").read_text() == "original\n"
+    assert handoff.exists()

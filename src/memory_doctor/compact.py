@@ -354,6 +354,7 @@ def run(
 ) -> int:
     import sys
     from memory_doctor.git import (
+        GitStatusError,
         commit_run,
         files_have_uncommitted_changes,
         is_git_repo,
@@ -475,9 +476,16 @@ def run(
             cfg.memory_dir / t.target_name for t in plan.tightens
         ]
         planned = card_targets + [index_path]
-        dirty = files_have_uncommitted_changes(cfg.memory_dir, planned)
+        action = "commit" if commit else "apply"
+        try:
+            dirty = files_have_uncommitted_changes(cfg.memory_dir, planned)
+        except GitStatusError as exc:
+            print(
+                f"memory-doctor: refusing to {action}, git status failed:\n  {exc}",
+                file=sys.stderr,
+            )
+            return 2
         if dirty:
-            action = "commit" if commit else "apply"
             print(
                 f"memory-doctor: refusing to {action}, target files have uncommitted local changes:",
                 file=sys.stderr,
