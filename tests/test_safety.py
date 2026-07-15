@@ -1,3 +1,4 @@
+import errno
 import os
 import stat
 from pathlib import Path
@@ -43,6 +44,26 @@ def test_atomic_write_syncs_file_then_replaces_then_syncs_directory(
     atomic_write_text(path, "new")
 
     assert calls == ["fsync:file", "replace", "fsync:directory"]
+
+
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX directory fsync")
+def test_atomic_write_ignores_unsupported_directory_fsync(
+    tmp_path: Path, monkeypatch
+):
+    path = tmp_path / "card.md"
+    path.write_text("old")
+    real_fsync = os.fsync
+
+    def reject_directory_fsync(fd: int) -> None:
+        if stat.S_ISDIR(os.fstat(fd).st_mode):
+            raise OSError(errno.EINVAL, "directory fsync unsupported")
+        real_fsync(fd)
+
+    monkeypatch.setattr(safety.os, "fsync", reject_directory_fsync)
+
+    atomic_write_text(path, "new")
+
+    assert path.read_text() == "new"
 
 
 def test_happy_path_flat_filename(memory_dir: Path):

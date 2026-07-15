@@ -5,6 +5,7 @@ mutates files on disk (compact, ingest).
 """
 from __future__ import annotations
 
+import errno
 import os
 import stat
 import tempfile
@@ -16,16 +17,28 @@ class UnsafeTargetError(Exception):
     pass
 
 
+_UNSUPPORTED_DIRECTORY_FSYNC_ERRNOS = frozenset(
+    getattr(errno, name)
+    for name in ("EINVAL", "ENOTSUP", "EOPNOTSUPP")
+    if hasattr(errno, name)
+)
+
+
 def _fsync_directory(path: Path) -> None:
     """Persist a replaced directory entry on platforms that support it."""
     if os.name != "posix":
         return
     flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
-    fd = os.open(path, flags)
+    fd = None
     try:
+        fd = os.open(path, flags)
         os.fsync(fd)
+    except OSError as exc:
+        if exc.errno not in _UNSUPPORTED_DIRECTORY_FSYNC_ERRNOS:
+            raise
     finally:
-        os.close(fd)
+        if fd is not None:
+            os.close(fd)
 
 
 def atomic_write_text(path: Path, content: str) -> None:
