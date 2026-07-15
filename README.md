@@ -46,6 +46,7 @@ pipx install memory-doctor   # if published; else clone this repo
 | **Lint** | Catch dead links | Broken wiki links and stale structure |
 | **Compact** | Stay under budget | Flatten bloated MEMORY.md into topic cards |
 | **Ingest** | Promote handoffs | Bridge notes into durable memory carefully |
+| **Init Git** | Make changes reviewable | Initialize and baseline the memory directory |
 
 ![Memory Doctor memory care workflow](docs/assets/memory-care-workflow.svg)
 
@@ -60,6 +61,9 @@ memory-doctor status
 
 # Find dead [[wiki-links]] before they rot the index (exits 1 if any):
 memory-doctor lint
+
+# One-time setup for optional commit-backed apply operations:
+memory-doctor init-git
 
 # Preview promoting pending handoffs into cards (dry-run):
 memory-doctor ingest
@@ -143,9 +147,9 @@ Commit message shape:
 ```
 memory-doctor ingest: 3 handoffs promoted
 
-- cards/foo.md (create-card from 2026-05-22_foo.md)
-- cards/bar.md (update-card append from 2026-05-22_bar.md)
-- cards/baz.md (create-card from 2026-05-22_baz.md)
+- foo.md (create-card from 2026-05-22_foo.md)
+- bar.md (update-card append from 2026-05-22_bar.md)
+- baz.md (create-card from 2026-05-22_baz.md)
 ```
 
 No `Co-Authored-By` or `Generated with` trailers; subject already identifies the tool.
