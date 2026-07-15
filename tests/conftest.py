@@ -68,14 +68,14 @@ def write_card(memory_dir: Path, name: str, body: str, frontmatter: dict | None 
         parts.append("---")
         parts.append("")
     parts.append(body)
-    path.write_text("\n".join(parts))
+    path.write_text("\n".join(parts), encoding="utf-8")
     return path
 
 
 def write_memory_index(memory_dir: Path, lines: Iterable[str]) -> Path:
     """Write MEMORY.md with the given lines."""
     path = memory_dir / "MEMORY.md"
-    path.write_text("\n".join(lines) + "\n")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return path
 
 
@@ -99,5 +99,5 @@ def write_handoff(
         f"## Target card\n{target}\n\n"
         f"## Suggested card content\n{content}\n"
     )
-    path.write_text(text)
+    path.write_text(text, encoding="utf-8")
     return path

@@ -11,6 +11,7 @@ import stat
 import tempfile
 import unicodedata
 from pathlib import Path
+from typing import Callable
 
 
 class UnsafeTargetError(Exception):
@@ -40,7 +41,15 @@ def _fsync_directory(path: Path) -> None:
         os.close(fd)
 
 
-def atomic_write_text(path: Path, content: str) -> None:
+def atomic_write_text(
+    path: Path,
+    content: str,
+    *,
+    after_create: Callable[[Path], None] | None = None,
+    before_replace: Callable[[Path], None] | None = None,
+    replace_file: Callable[[Path, Path], None] | None = None,
+    cleanup_temp_on_error: bool = True,
+) -> None:
     """Write `content` to `path` atomically via tempfile + os.replace.
 
     Same-dir tempfile guarantees the rename is atomic on POSIX filesystems,
@@ -55,17 +64,24 @@ def atomic_write_text(path: Path, content: str) -> None:
     fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
     replaced = False
     try:
-        with os.fdopen(fd, "w") as f:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
+            if after_create is not None:
+                after_create(Path(tmp))
             f.write(content)
             f.flush()
             if existing_mode is not None:
                 os.chmod(tmp, existing_mode)
             os.fsync(f.fileno())
-        os.replace(tmp, path)
+        if before_replace is not None:
+            before_replace(Path(tmp))
+        if replace_file is None:
+            os.replace(tmp, path)
+        else:
+            replace_file(Path(tmp), path)
         replaced = True
         _fsync_directory(path.parent)
     except Exception:
-        if not replaced:
+        if not replaced and cleanup_temp_on_error:
             try:
                 os.unlink(tmp)
             except OSError:

@@ -1,15 +1,192 @@
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
+
+import pytest
 
 from tests.conftest import write_handoff
 from memory_doctor.paths import PathConfig
-from memory_doctor.ingest import run
+from memory_doctor.ingest import _plan_targets, run
 from memory_doctor.parsing import MAX_HANDOFF_BYTES, MAX_SUGGESTED_CONTENT_BYTES
+from memory_doctor.safety import atomic_write_text
 
 
 def cfg(memory_dir, handoffs_dir):
     return PathConfig(memory_dir=memory_dir, handoffs_dir=handoffs_dir, max_lines=180)
+
+
+def _parent_snapshot(memory_dir: Path) -> set[tuple[str, str]]:
+    """Record sibling names and kinds without reading transaction internals."""
+    return {
+        (path.name, "dir" if path.is_dir() else "file")
+        for path in memory_dir.parent.iterdir()
+    }
+
+
+def test_plan_targets_preserves_validated_submitted_spelling(
+    memory_dir, handoffs_dir, monkeypatch
+):
+    from memory_doctor import ingest as ingest_mod
+
+    pending = [
+        write_handoff(
+            handoffs_dir,
+            "first.md",
+            action="update-card",
+            target="Foo.md",
+        ),
+        write_handoff(
+            handoffs_dir,
+            "second.md",
+            action="update-card",
+            target="foo.md",
+        ),
+    ]
+    canonical = memory_dir / "Foo.md"
+    monkeypatch.setattr(
+        ingest_mod,
+        "resolve_card_target",
+        lambda memory_root, raw: canonical,
+    )
+
+    assert [path.name for path in _plan_targets(pending, memory_dir)] == [
+        "Foo.md",
+        "foo.md",
+    ]
+
+
+def test_update_card_reads_existing_content_as_utf8(
+    memory_dir, handoffs_dir, monkeypatch
+):
+    card = memory_dir / "unicode.md"
+    card.write_text("café\n", encoding="utf-8")
+    write_handoff(
+        handoffs_dir,
+        "unicode.md",
+        action="update-card",
+        target="unicode.md",
+        content="résumé",
+    )
+    real_read_text = Path.read_text
+
+    def require_utf8(path: Path, *args, **kwargs):
+        if path == card:
+            assert kwargs.get("encoding") == "utf-8"
+        return real_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", require_utf8)
+
+    assert run(cfg(memory_dir, handoffs_dir), apply=True) == 0
+    assert card.read_text(encoding="utf-8").endswith("résumé\n")
+
+
+def test_empty_apply_creates_no_transaction_state(memory_dir, handoffs_dir, capsys):
+    before = _parent_snapshot(memory_dir)
+
+    assert run(cfg(memory_dir, handoffs_dir), apply=True) == 0
+
+    assert "no pending handoffs" in capsys.readouterr().out
+    assert _parent_snapshot(memory_dir) == before
+
+
+@pytest.mark.parametrize(
+    ("unsafe_location", "file_attributes", "zero_inode"),
+    [
+        ("target", 0x1, False),
+        ("target", 0x400, False),
+        ("target", 0, True),
+        ("source", 0x1, False),
+        ("source", 0x400, False),
+        ("source", 0, True),
+    ],
+)
+def test_apply_preflights_every_artifact_before_move_or_state(
+    memory_dir,
+    handoffs_dir,
+    monkeypatch,
+    unsafe_location,
+    file_attributes,
+    zero_inode,
+):
+    from memory_doctor import transaction as transaction_mod
+
+    card = memory_dir / "existing.md"
+    card.write_text("original\n")
+    source = write_handoff(
+        handoffs_dir,
+        "unsafe.md",
+        action="update-card",
+        target="existing.md",
+        content="new content",
+    )
+    parent_before = _parent_snapshot(memory_dir)
+    real_lstat = Path.lstat
+    unsafe_path = card if unsafe_location == "target" else source
+
+    def mark_unsafe(path: Path):
+        result = real_lstat(path)
+        if path == unsafe_path:
+            return SimpleNamespace(
+                st_mode=result.st_mode,
+                st_dev=result.st_dev,
+                st_ino=0 if zero_inode else result.st_ino,
+                st_size=result.st_size,
+                st_mtime_ns=result.st_mtime_ns,
+                st_file_attributes=file_attributes,
+                st_reparse_tag=1 if file_attributes == 0x400 else 0,
+            )
+        return result
+
+    monkeypatch.setattr(transaction_mod.os, "name", "nt")
+    monkeypatch.setattr(Path, "lstat", mark_unsafe)
+
+    code = run(cfg(memory_dir, handoffs_dir), apply=True, force=True)
+
+    assert code == 2
+    assert card.read_text() == "original\n"
+    assert source.exists()
+    assert not (handoffs_dir / "processed" / source.name).exists()
+    assert _parent_snapshot(memory_dir) == parent_before
+
+
+@pytest.mark.parametrize(
+    ("first_name", "alias_name"),
+    [
+        ("Foo.md", "foo.md"),
+        ("caf\N{LATIN SMALL LETTER E WITH ACUTE}.md", "cafe\N{COMBINING ACUTE ACCENT}.md"),
+    ],
+)
+def test_apply_rejects_normalized_target_aliases_before_move_or_state(
+    memory_dir, handoffs_dir, capsys, first_name, alias_name
+):
+    card = memory_dir / first_name
+    card.write_text("original\n")
+    handoffs = [
+        write_handoff(
+            handoffs_dir,
+            "first-alias.md",
+            action="update-card",
+            target=first_name,
+            content="first update",
+        ),
+        write_handoff(
+            handoffs_dir,
+            "second-alias.md",
+            action="update-card",
+            target=alias_name,
+            content="second update",
+        ),
+    ]
+    before = _parent_snapshot(memory_dir)
+
+    assert run(cfg(memory_dir, handoffs_dir), apply=True) == 2
+
+    assert "may alias one filesystem entry" in capsys.readouterr().err
+    assert card.read_text() == "original\n"
+    assert all(path.exists() for path in handoffs)
+    assert not any((handoffs_dir / "processed").iterdir())
+    assert _parent_snapshot(memory_dir) == before
 
 
 def test_create_card_happy_path(memory_dir, handoffs_dir):
@@ -109,13 +286,15 @@ def test_ingest_create_uses_atomic_write(memory_dir, handoffs_dir):
     # not a raw target.write_text(...). Asserted via spy on the imported name.
     write_handoff(handoffs_dir, "atomic-create.md", action="create-card",
                   target="atomic-card.md", content="atomic body")
-    with patch("memory_doctor.ingest.atomic_write_text") as spy:
+    with patch(
+        "memory_doctor.transaction.atomic_write_text", wraps=atomic_write_text
+    ) as spy:
         code = run(cfg(memory_dir, handoffs_dir), apply=True, force=False)
     assert code == 0
     assert spy.called
     # Target path should be inside memory_dir.
-    target_arg = spy.call_args.args[0]
-    assert target_arg == memory_dir / "atomic-card.md"
+    target = memory_dir / "atomic-card.md"
+    assert any(call.args[0] == target for call in spy.call_args_list)
 
 
 def test_ingest_update_uses_atomic_write(memory_dir, handoffs_dir):
@@ -123,13 +302,18 @@ def test_ingest_update_uses_atomic_write(memory_dir, handoffs_dir):
     (memory_dir / "growing-atomic.md").write_text("original\n")
     write_handoff(handoffs_dir, "atomic-update.md", action="update-card",
                   target="growing-atomic.md", content="appended")
-    with patch("memory_doctor.ingest.atomic_write_text") as spy:
+    with patch(
+        "memory_doctor.transaction.atomic_write_text", wraps=atomic_write_text
+    ) as spy:
         code = run(cfg(memory_dir, handoffs_dir), apply=True, force=False)
     assert code == 0
     assert spy.called
     # Payload should include both the existing content and the appended block,
     # confirming we compute the combined result before writing (no in-place append).
-    payload = spy.call_args.args[1]
+    target = memory_dir / "growing-atomic.md"
+    payload = next(
+        call.args[1] for call in spy.call_args_list if call.args[0] == target
+    )
     assert "original" in payload
     assert "appended" in payload
 
@@ -291,6 +475,28 @@ def test_plain_apply_refuses_dirty_target_card(git_memory_dir, handoffs_dir, cap
     assert (handoffs_dir / "h-dirty.md").exists()
 
 
+def test_repeated_cards_prefix_cannot_bypass_dirty_target_preflight(
+    git_memory_dir, handoffs_dir
+):
+    card = git_memory_dir / "dirty.md"
+    card.write_text("original\n", encoding="utf-8")
+    _commit_all(git_memory_dir)
+    card.write_text("original\noperator edit\n", encoding="utf-8")
+    handoff = write_handoff(
+        handoffs_dir,
+        "repeated-prefix.md",
+        action="update-card",
+        target="cards/cards/dirty.md",
+        content="transaction append",
+    )
+    before = card.read_bytes()
+
+    assert run(cfg(git_memory_dir, handoffs_dir), apply=True) == 2
+
+    assert card.read_bytes() == before
+    assert handoff.exists()
+
+
 def test_plain_apply_proceeds_on_clean_tree(git_memory_dir, handoffs_dir):
     memory_dir = git_memory_dir
     (memory_dir / "existing.md").write_text("original\n")
@@ -329,3 +535,566 @@ def test_plain_apply_reports_git_status_failure(
     assert "fatal: status exploded" in capsys.readouterr().err
     assert (memory_dir / "existing.md").read_text() == "original\n"
     assert handoff.exists()
+
+
+def test_ingest_rolls_back_write_when_processed_move_fails(
+    memory_dir, handoffs_dir, monkeypatch, capsys
+):
+    from memory_doctor import transaction as transaction_mod
+
+    card = memory_dir / "existing.md"
+    card.write_text("original\n")
+    handoff = write_handoff(
+        handoffs_dir,
+        "h-move-failure.md",
+        action="update-card",
+        target="existing.md",
+        content="append once",
+    )
+    real_move = transaction_mod.ApplyTransaction.move_handoff
+    failed = False
+
+    def fail_first_move(transaction, src, dst, **kwargs):
+        nonlocal failed
+        if not failed:
+            failed = True
+            raise OSError("move exploded")
+        return real_move(transaction, src, dst, **kwargs)
+
+    monkeypatch.setattr(
+        transaction_mod.ApplyTransaction, "move_handoff", fail_first_move
+    )
+
+    assert run(cfg(memory_dir, handoffs_dir), apply=True) == 1
+    assert card.read_text() == "original\n"
+    assert handoff.exists()
+    assert "rolled back" in capsys.readouterr().err
+
+    assert run(cfg(memory_dir, handoffs_dir), apply=True) == 0
+    assert card.read_text().count("append once") == 1
+
+
+def test_ingest_restart_recovers_quarantined_source_before_no_work_return(
+    memory_dir, handoffs_dir, capsys
+):
+    from memory_doctor.transaction import ApplyTransaction
+
+    card = memory_dir / "existing.md"
+    card.write_text("original\n")
+    handoff = write_handoff(
+        handoffs_dir,
+        "h-crashed-after-move.md",
+        action="update-card",
+        target="existing.md",
+        content="recovered update",
+    )
+    destination = handoffs_dir / "processed" / handoff.name
+    abandoned = ApplyTransaction(memory_dir, handoffs_dir)
+    abandoned.__enter__()
+    abandoned.move_handoff(handoff, destination)
+    source_quarantine = abandoned._moves[0].source_quarantine
+    journal = abandoned._journal_path
+    abandoned._release_lock()
+
+    assert not handoff.exists()
+    assert destination.exists()
+    assert source_quarantine.exists()
+    assert journal.exists()
+
+    assert run(cfg(memory_dir, handoffs_dir), apply=True) == 0
+
+    assert "recovered an interrupted apply transaction" in capsys.readouterr().err
+    assert not handoff.exists()
+    assert destination.exists()
+    assert card.read_text().startswith("original\n")
+    assert card.read_text().count("recovered update") == 1
+    assert not source_quarantine.exists()
+    assert not journal.exists()
+
+
+def test_ingest_rechecks_recovery_after_concurrent_handoff_quarantine(
+    memory_dir, handoffs_dir, monkeypatch
+):
+    from memory_doctor import ingest as ingest_mod
+    from memory_doctor.transaction import ApplyTransaction
+
+    card = memory_dir / "existing.md"
+    card.write_text("original\n")
+    handoff = write_handoff(
+        handoffs_dir,
+        "h-raced-after-probe.md",
+        action="update-card",
+        target="existing.md",
+        content="raced recovery",
+    )
+    destination = handoffs_dir / "processed" / handoff.name
+    real_probe = ingest_mod.has_pending_transaction_recovery
+    raced = False
+
+    def crash_after_first_probe(path: Path) -> bool:
+        nonlocal raced
+        result = real_probe(path)
+        if not raced:
+            raced = True
+            abandoned = ApplyTransaction(memory_dir, handoffs_dir)
+            abandoned.__enter__()
+            abandoned.move_handoff(handoff, destination)
+            abandoned._release_lock()
+        return result
+
+    monkeypatch.setattr(
+        ingest_mod, "has_pending_transaction_recovery", crash_after_first_probe
+    )
+
+    assert run(cfg(memory_dir, handoffs_dir), apply=True) == 0
+    assert destination.exists()
+    assert card.read_text().count("raced recovery") == 1
+
+
+def test_ingest_refuses_handoff_replaced_after_transaction_parse(
+    memory_dir, handoffs_dir, monkeypatch
+):
+    from memory_doctor import ingest as ingest_mod
+
+    card = memory_dir / "existing.md"
+    card.write_text("original\n")
+    handoff = write_handoff(
+        handoffs_dir,
+        "h-operator-replaced.md",
+        action="update-card",
+        target="existing.md",
+        content="stale parsed content",
+    )
+    replacement = write_handoff(
+        handoffs_dir,
+        "replacement.tmp.md",
+        action="update-card",
+        target="existing.md",
+        content="operator replacement",
+    )
+    replacement_bytes = replacement.read_bytes()
+    replacement.unlink()
+    real_parse = ingest_mod.parse_handoff
+    parse_count = 0
+
+    def replace_after_locked_parse(path: Path):
+        nonlocal parse_count
+        parsed = real_parse(path)
+        if path == handoff:
+            parse_count += 1
+            if parse_count == 3:
+                operator_path = handoffs_dir / "operator.tmp"
+                operator_path.write_bytes(replacement_bytes)
+                operator_path.replace(handoff)
+        return parsed
+
+    monkeypatch.setattr(ingest_mod, "parse_handoff", replace_after_locked_parse)
+
+    assert run(cfg(memory_dir, handoffs_dir), apply=True) == 2
+    assert handoff.read_bytes() == replacement_bytes
+    assert not (handoffs_dir / "processed" / handoff.name).exists()
+    assert card.read_text() == "original\n"
+
+
+def test_ingest_preserves_card_replaced_after_read_before_write(
+    memory_dir, handoffs_dir, monkeypatch
+):
+    from memory_doctor import transaction as transaction_mod
+
+    card = memory_dir / "existing.md"
+    card.write_text("original\n")
+    handoff = write_handoff(
+        handoffs_dir,
+        "h-card-replaced.md",
+        action="update-card",
+        target="existing.md",
+        content="stale append",
+    )
+    real_write = transaction_mod.ApplyTransaction.write_text
+    replaced = False
+
+    def replace_before_transaction_snapshot(transaction, path, content, **kwargs):
+        nonlocal replaced
+        if path == card and not replaced:
+            replaced = True
+            operator_path = memory_dir / "operator.tmp"
+            operator_path.write_text("operator replacement\n")
+            operator_path.replace(card)
+        return real_write(transaction, path, content, **kwargs)
+
+    monkeypatch.setattr(
+        transaction_mod.ApplyTransaction,
+        "write_text",
+        replace_before_transaction_snapshot,
+    )
+
+    assert run(cfg(memory_dir, handoffs_dir), apply=True) == 2
+    assert card.read_text() == "operator replacement\n"
+    assert handoff.exists()
+    assert not (handoffs_dir / "processed" / handoff.name).exists()
+
+
+def test_ingest_syncs_move_directories_before_clearing_journal(
+    memory_dir, handoffs_dir, monkeypatch
+):
+    from memory_doctor import safety as safety_mod
+    from memory_doctor import transaction as transaction_mod
+
+    handoff = write_handoff(
+        handoffs_dir,
+        "h-durable-move.md",
+        action="no-card",
+        target="unused.md",
+        content="no card",
+    )
+    destination = handoffs_dir / "processed" / handoff.name
+    calls: list[str] = []
+    real_link = transaction_mod.os.link
+    real_rename = transaction_mod._rename_noreplace
+    real_unlink = Path.unlink
+
+    def record_link(source, target, **kwargs):
+        calls.append("link")
+        return real_link(source, target, **kwargs)
+
+    def record_rename(source, target):
+        calls.append("rename-source-quarantine")
+        return real_rename(source, target)
+
+    def record_directory_sync(path: Path) -> None:
+        if path.name.startswith(".memory-doctor-"):
+            calls.append("fsync:state")
+        else:
+            calls.append(f"fsync:{path.name}")
+
+    def record_unlink(path: Path, *args, **kwargs):
+        if path.name.startswith(".mds-"):
+            calls.append("unlink-source-quarantine")
+        elif path.name == "apply.journal.json":
+            calls.append("unlink:journal")
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(transaction_mod.os, "link", record_link)
+    monkeypatch.setattr(transaction_mod, "_rename_noreplace", record_rename)
+    monkeypatch.setattr(
+        transaction_mod, "_fsync_directory", record_directory_sync, raising=False
+    )
+    monkeypatch.setattr(safety_mod, "_fsync_directory", record_directory_sync)
+    monkeypatch.setattr(Path, "unlink", record_unlink)
+
+    assert run(cfg(memory_dir, handoffs_dir), apply=True) == 0
+    assert destination.exists()
+    assert calls.index("link") < calls.index("fsync:processed")
+    assert calls.index("rename-source-quarantine") < calls.index(
+        f"fsync:{handoffs_dir.name}"
+    )
+    unlink_quarantine = calls.index("unlink-source-quarantine")
+    assert calls.index(f"fsync:{handoffs_dir.name}", unlink_quarantine) < calls.index(
+        "unlink:journal"
+    )
+    assert calls.index("unlink:journal") < len(calls) - 1
+    assert calls[-1] == "fsync:state"
+
+
+def test_ingest_refuses_processed_name_collision_before_write(
+    memory_dir, handoffs_dir, capsys
+):
+    card = memory_dir / "existing.md"
+    card.write_text("original\n")
+    handoff = write_handoff(
+        handoffs_dir,
+        "same-name.md",
+        action="update-card",
+        target="existing.md",
+        content="must not append",
+    )
+    (handoffs_dir / "processed" / handoff.name).write_text("older handoff\n")
+
+    assert run(cfg(memory_dir, handoffs_dir), apply=True) == 2
+    assert card.read_text() == "original\n"
+    assert handoff.exists()
+    assert "processed" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("error_type", [PermissionError, RuntimeError])
+def test_ingest_transaction_construction_failure_is_handled(
+    memory_dir, handoffs_dir, monkeypatch, capsys, error_type
+):
+    handoff = write_handoff(
+        handoffs_dir,
+        "constructor-failure.md",
+        action="create-card",
+        target="never-written.md",
+        content="must stay pending",
+    )
+    before = _parent_snapshot(memory_dir)
+
+    def fail_construction(*args, **kwargs):
+        raise error_type("cannot stat memory root")
+
+    monkeypatch.setattr("memory_doctor.ingest.ApplyTransaction", fail_construction)
+
+    assert run(cfg(memory_dir, handoffs_dir), apply=True) == 2
+    err = capsys.readouterr().err
+    assert "transaction recovery incomplete" in err
+    assert "cannot stat memory root" in err
+    assert "Traceback" not in err
+    assert _parent_snapshot(memory_dir) == before
+    assert handoff.exists()
+    assert not (memory_dir / "never-written.md").exists()
+
+
+@pytest.mark.parametrize("error_type", [PermissionError, RuntimeError])
+def test_ingest_transaction_entry_failure_is_handled(
+    memory_dir, handoffs_dir, monkeypatch, capsys, error_type
+):
+    handoff = write_handoff(
+        handoffs_dir,
+        "entry-failure.md",
+        action="create-card",
+        target="never-written.md",
+        content="must stay pending",
+    )
+    before = _parent_snapshot(memory_dir)
+
+    def fail_entry(transaction):
+        raise error_type("cannot create transaction lock")
+
+    monkeypatch.setattr(
+        "memory_doctor.transaction.ApplyTransaction.__enter__", fail_entry
+    )
+
+    assert run(cfg(memory_dir, handoffs_dir), apply=True) == 2
+    err = capsys.readouterr().err
+    assert "transaction recovery incomplete" in err
+    assert "cannot create transaction lock" in err
+    assert "Traceback" not in err
+    assert _parent_snapshot(memory_dir) == before
+    assert handoff.exists()
+    assert not (memory_dir / "never-written.md").exists()
+
+
+def test_ingest_invalid_author_preflight_creates_no_transaction_state(
+    git_memory_dir, handoffs_dir
+):
+    handoff = write_handoff(
+        handoffs_dir,
+        "invalid-author-no-state.md",
+        action="create-card",
+        target="never-written.md",
+        content="must stay pending",
+    )
+    before = _parent_snapshot(git_memory_dir)
+
+    assert run(
+        cfg(git_memory_dir, handoffs_dir),
+        apply=True,
+        commit=True,
+        commit_author="bad-author",
+    ) == 2
+
+    assert _parent_snapshot(git_memory_dir) == before
+    assert handoff.exists()
+    assert not (git_memory_dir / "never-written.md").exists()
+
+
+def test_ingest_non_git_commit_preflight_creates_no_transaction_state(
+    memory_dir, handoffs_dir
+):
+    handoff = write_handoff(
+        handoffs_dir,
+        "non-git-no-state.md",
+        action="create-card",
+        target="never-written.md",
+        content="must stay pending",
+    )
+    before = _parent_snapshot(memory_dir)
+
+    assert run(cfg(memory_dir, handoffs_dir), apply=True, commit=True) == 2
+
+    assert _parent_snapshot(memory_dir) == before
+    assert handoff.exists()
+    assert not (memory_dir / "never-written.md").exists()
+
+
+def test_ingest_dirty_tree_preflight_creates_no_transaction_state(
+    git_memory_dir, handoffs_dir
+):
+    card = git_memory_dir / "existing-no-state.md"
+    card.write_text("original\n")
+    _commit_all(git_memory_dir)
+    card.write_text("operator edit\n")
+    handoff = write_handoff(
+        handoffs_dir,
+        "dirty-no-state.md",
+        action="update-card",
+        target=card.name,
+        content="must not append",
+    )
+    before = _parent_snapshot(git_memory_dir)
+
+    assert run(cfg(git_memory_dir, handoffs_dir), apply=True) == 2
+
+    assert _parent_snapshot(git_memory_dir) == before
+    assert card.read_text() == "operator edit\n"
+    assert handoff.exists()
+
+
+def test_ingest_revalidates_git_status_under_transaction_lock(
+    git_memory_dir, handoffs_dir, monkeypatch
+):
+    card = git_memory_dir / "race.md"
+    card.write_text("original\n")
+    _commit_all(git_memory_dir)
+    handoff = write_handoff(
+        handoffs_dir,
+        "race.md",
+        action="update-card",
+        target=card.name,
+        content="must not append",
+    )
+    calls = 0
+
+    def clean_then_dirty(memory_dir, paths):
+        nonlocal calls
+        calls += 1
+        return [] if calls == 1 else [(card, " M")]
+
+    monkeypatch.setattr(
+        "memory_doctor.ingest.files_have_uncommitted_changes", clean_then_dirty
+    )
+
+    assert run(cfg(git_memory_dir, handoffs_dir), apply=True) == 2
+    assert calls == 2
+    assert card.read_text() == "original\n"
+    assert handoff.exists()
+
+
+def test_ingest_unsupported_move_fails_before_card_write(
+    memory_dir, tmp_path, monkeypatch, capsys
+):
+    from memory_doctor.transaction import TransactionRecoveryError
+
+    handoffs_dir = tmp_path / "unsupported-handoffs"
+    handoffs_dir.mkdir()
+    card = memory_dir / "existing-unsupported.md"
+    card.write_text("original\n")
+    handoff = write_handoff(
+        handoffs_dir,
+        "unsupported.md",
+        action="update-card",
+        target=card.name,
+        content="must not append",
+    )
+
+    def unsupported_platform(*args, **kwargs):
+        raise TransactionRecoveryError("hard links are unsupported")
+
+    monkeypatch.setattr(
+        "memory_doctor.ingest.preflight_transaction_capabilities",
+        unsupported_platform,
+    )
+
+    assert run(cfg(memory_dir, handoffs_dir), apply=True) == 2
+    assert "hard links are unsupported" in capsys.readouterr().err
+    assert card.read_text() == "original\n"
+    assert handoff.exists()
+    assert not (handoffs_dir / "processed").exists()
+
+
+def test_ingest_runtime_link_failure_happens_before_card_write(
+    memory_dir, handoffs_dir, monkeypatch, capsys
+):
+    from memory_doctor import transaction as transaction_mod
+
+    card = memory_dir / "existing-link-failure.md"
+    card.write_text("original\n")
+    handoff = write_handoff(
+        handoffs_dir,
+        "link-failure.md",
+        action="update-card",
+        target=card.name,
+        content="must not append",
+    )
+    real_link = transaction_mod.os.link
+
+    def fail_link(source, destination, **kwargs):
+        if Path(source) == handoff:
+            raise OSError("link failed")
+        return real_link(source, destination, **kwargs)
+
+    monkeypatch.setattr(transaction_mod.os, "link", fail_link)
+
+    assert run(cfg(memory_dir, handoffs_dir), apply=True) == 1
+    assert "cannot link handoff" in capsys.readouterr().err
+    assert card.read_text() == "original\n"
+    assert handoff.exists()
+    assert not (handoffs_dir / "processed" / handoff.name).exists()
+
+
+def test_ingest_rejects_overlapping_memory_and_handoffs_before_state_or_writes(
+    tmp_path, capsys
+):
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    handoff = write_handoff(
+        shared,
+        "pending.md",
+        action="create-card",
+        target="pending.md",
+        content="replacement card content",
+    )
+    original = handoff.read_bytes()
+
+    assert run(cfg(shared, shared), apply=True, force=True) == 2
+
+    assert "target overlaps" in capsys.readouterr().err
+    assert handoff.read_bytes() == original
+    assert not (shared / "processed").exists()
+    assert not list(tmp_path.glob(".memory-doctor-*"))
+
+
+def test_ingest_supports_nested_distinct_handoffs_root(tmp_path):
+    memory_dir = tmp_path / "memory"
+    handoffs_dir = memory_dir / "handoffs"
+    memory_dir.mkdir()
+    handoffs_dir.mkdir()
+    handoff = write_handoff(
+        handoffs_dir,
+        "nested.md",
+        action="create-card",
+        target="nested-card.md",
+        content="nested configuration works",
+    )
+
+    assert run(cfg(memory_dir, handoffs_dir), apply=True) == 0
+
+    assert (memory_dir / "nested-card.md").read_text() == (
+        "nested configuration works\n"
+    )
+    assert not handoff.exists()
+    assert (handoffs_dir / "processed" / handoff.name).exists()
+
+
+def test_ingest_rejects_nested_card_and_processed_handoff_path_overlap(
+    tmp_path, capsys
+):
+    handoffs_dir = tmp_path / "handoffs"
+    memory_dir = handoffs_dir / "processed"
+    handoffs_dir.mkdir()
+    memory_dir.mkdir()
+    handoff = write_handoff(
+        handoffs_dir,
+        "pending.md",
+        action="create-card",
+        target="pending.md",
+        content="must not replace the handoff",
+    )
+    original = handoff.read_bytes()
+
+    assert run(cfg(memory_dir, handoffs_dir), apply=True, force=True) == 2
+
+    assert "target overlaps" in capsys.readouterr().err
+    assert handoff.read_bytes() == original
+    assert not (memory_dir / handoff.name).exists()
+    assert not list(handoffs_dir.glob(".memory-doctor-*"))

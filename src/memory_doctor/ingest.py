@@ -1,7 +1,6 @@
 """Ingest verb: promote pending handoffs into cards."""
 from __future__ import annotations
 
-import shutil
 import sys
 from pathlib import Path
 
@@ -20,6 +19,14 @@ from memory_doctor.safety import (
     atomic_write_text,
     resolve_card_target,
 )
+from memory_doctor.transaction import (
+    ApplyTransaction,
+    TransactionRecoveryError,
+    has_pending_transaction_recovery,
+    preflight_managed_artifact,
+    preflight_transaction_capabilities,
+    preflight_visible_path_aliases,
+)
 
 
 def _process_handoff(
@@ -30,15 +37,39 @@ def _process_handoff(
     apply: bool,
     force: bool,
     touched: list[tuple[Path, str]],
+    transaction: ApplyTransaction | None,
+    source_identity=None,
 ) -> tuple[str, bool]:
     """Returns (message, success). Appends (target_path, reason) to `touched`
     on each successful write so the caller can build the commit body."""
     src = parsed.path
 
+    def move_processed() -> None:
+        destination = handoffs_dir / "processed" / src.name
+        if transaction is None:
+            raise TransactionRecoveryError(
+                "applied handoff move requires an active transaction"
+            )
+        transaction.move_handoff(
+            src,
+            destination,
+            expected_identity=source_identity,
+        )
+
+    def write_target(target: Path, payload: str, expected_identity=None) -> None:
+        if transaction:
+            transaction.write_text(
+                target,
+                payload,
+                expected_identity=expected_identity,
+            )
+        else:
+            atomic_write_text(target, payload)
+
     if parsed.action == "no-card":
         msg = f"{src.name}: no-card -> move to processed"
         if apply:
-            shutil.move(str(src), str(handoffs_dir / "processed" / src.name))
+            move_processed()
         return msg, True
 
     try:
@@ -48,27 +79,37 @@ def _process_handoff(
 
     if parsed.action == "create-card":
         if target.exists():
-            existing = target.read_text()
+            target_identity = (
+                transaction.memory_file_identity(target) if transaction else None
+            )
+            existing = target.read_text(encoding="utf-8")
+            if (
+                transaction
+                and transaction.memory_file_identity(target) != target_identity
+            ):
+                raise TransactionRecoveryError(
+                    f"memory file {target.name} changed while it was read"
+                )
             if existing.strip() == parsed.content.strip():
                 msg = f"{src.name}: create-card -> {target.name} already identical, move to processed"
                 if apply:
-                    shutil.move(str(src), str(handoffs_dir / "processed" / src.name))
+                    move_processed()
                 return msg, True
             if not force:
                 return (f"{src.name}: SKIP - {target.name} exists with different content (use --force)", False)
             msg = f"{src.name}: create-card -> {target.name} (FORCE overwrite)"
             if apply:
                 payload = parsed.content if parsed.content.endswith("\n") else parsed.content + "\n"
-                atomic_write_text(target, payload)
+                move_processed()
+                write_target(target, payload, target_identity)
                 touched.append((target, f"create-card (force) from {src.name}"))
-                shutil.move(str(src), str(handoffs_dir / "processed" / src.name))
             return msg, True
         msg = f"{src.name}: create-card -> {target.name}"
         if apply:
             payload = parsed.content if parsed.content.endswith("\n") else parsed.content + "\n"
-            atomic_write_text(target, payload)
+            move_processed()
+            write_target(target, payload, None)
             touched.append((target, f"create-card from {src.name}"))
-            shutil.move(str(src), str(handoffs_dir / "processed" / src.name))
         return msg, True
 
     if parsed.action == "update-card":
@@ -76,11 +117,25 @@ def _process_handoff(
             return (f"{src.name}: ERROR - update-card target {target.name} does not exist", False)
         msg = f"{src.name}: update-card -> {target.name} (append)"
         if apply:
-            existing = target.read_text()
+            target_identity = (
+                transaction.memory_file_identity(target) if transaction else None
+            )
+            existing = target.read_text(encoding="utf-8")
+            if (
+                transaction
+                and transaction.memory_file_identity(target) != target_identity
+            ):
+                raise TransactionRecoveryError(
+                    f"memory file {target.name} changed while it was read"
+                )
             sep = "" if existing.endswith("\n\n") else ("\n" if existing.endswith("\n") else "\n\n")
-            atomic_write_text(target, existing + sep + parsed.content + "\n")
+            move_processed()
+            write_target(
+                target,
+                existing + sep + parsed.content + "\n",
+                target_identity,
+            )
             touched.append((target, f"update-card append from {src.name}"))
-            shutil.move(str(src), str(handoffs_dir / "processed" / src.name))
         return msg, True
 
     return (f"{src.name}: unknown action {parsed.action!r}", False)
@@ -163,40 +218,92 @@ def _plan_targets(pending: list[Path], memory_dir: Path) -> list[Path]:
         if parsed.action == "no-card":
             continue
         try:
-            targets.append(resolve_card_target(memory_dir, parsed.target))
+            resolve_card_target(memory_dir, parsed.target)
         except UnsafeTargetError:
             continue
+        targets.append(
+            memory_dir.resolve() / parsed.target.removeprefix("cards/")
+        )
     return targets
 
 
-def run(
+def _apply_preflight(
     cfg: PathConfig,
+    pending: list[Path],
     *,
-    apply: bool = False,
-    force: bool = False,
-    commit: bool = False,
-    commit_author: str | None = None,
+    commit: bool,
+    commit_author: str | None,
 ) -> int:
-    if commit and not apply:
-        # Friendlier than erroring: people experimenting with the flag often
-        # forget --apply, and the message guides them to the right thing.
-        print("memory-doctor ingest: skipping commit (dry-run; use --apply)")
+    """Validate an apply without creating transaction state or mutating files."""
+    try:
+        for path in pending:
+            preflight_managed_artifact(
+                path, label="pending handoff", required=True
+            )
+        preflight_visible_path_aliases(pending, label="pending handoff")
+    except TransactionRecoveryError as exc:
+        print(
+            f"memory-doctor ingest: refusing unsafe transaction artifact: {exc}",
+            file=sys.stderr,
+        )
+        return 2
 
-    pending = sorted(p for p in cfg.handoffs_dir.glob("*.md"))
-    if not pending:
-        print("memory-doctor ingest: no pending handoffs")
-        return 0
+    planned = _plan_targets(pending, cfg.memory_dir)
+    try:
+        for path in planned:
+            preflight_managed_artifact(path, label="card target")
+        preflight_visible_path_aliases(planned, label="card target")
+    except TransactionRecoveryError as exc:
+        print(
+            f"memory-doctor ingest: refusing unsafe transaction artifact: {exc}",
+            file=sys.stderr,
+        )
+        return 2
 
-    if apply and commit:
-        planned = _plan_targets(pending, cfg.memory_dir)
-        rc = _preflight_for_commit(cfg.memory_dir, planned, commit_author)
-        if rc != 0:
-            return rc
-    elif apply and is_git_repo(cfg.memory_dir):
-        # Same dirty-tree protection as the --commit pre-flight: a plain
-        # --apply over uncommitted card edits (especially with --force) would
-        # destroy them with no committed baseline to recover from.
-        planned = _plan_targets(pending, cfg.memory_dir)
+    collisions = [
+        path.name
+        for path in pending
+        if (cfg.handoffs_dir / "processed" / path.name).exists()
+    ]
+    if collisions:
+        print(
+            "memory-doctor ingest: refusing to apply, processed handoff already exists: "
+            + ", ".join(collisions),
+            file=sys.stderr,
+        )
+        return 2
+
+    move_paths = [path.resolve(strict=False) for path in pending]
+    move_paths.extend(
+        (cfg.handoffs_dir / "processed" / path.name).resolve(strict=False)
+        for path in pending
+    )
+    try:
+        preflight_visible_path_aliases(
+            [*planned, *move_paths], label="transaction visible"
+        )
+    except TransactionRecoveryError as exc:
+        print(
+            f"memory-doctor ingest: refusing unsafe transaction artifact: {exc}",
+            file=sys.stderr,
+        )
+        return 2
+    visible_overlaps = sorted(
+        {path.resolve(strict=False) for path in planned} & set(move_paths),
+        key=str,
+    )
+    if visible_overlaps:
+        print(
+            "memory-doctor ingest: refusing to apply, a card target overlaps "
+            "a pending or processed handoff path: "
+            + ", ".join(path.name for path in visible_overlaps),
+            file=sys.stderr,
+        )
+        return 2
+    if commit:
+        return _preflight_for_commit(cfg.memory_dir, planned, commit_author)
+
+    if is_git_repo(cfg.memory_dir):
         try:
             dirty = files_have_uncommitted_changes(cfg.memory_dir, planned)
         except GitStatusError as exc:
@@ -217,6 +324,40 @@ def run(
                 file=sys.stderr,
             )
             return 2
+    return 0
+
+
+def _run(
+    cfg: PathConfig,
+    *,
+    apply: bool = False,
+    force: bool = False,
+    commit: bool = False,
+    commit_author: str | None = None,
+    transaction: ApplyTransaction | None = None,
+) -> int:
+    if commit and not apply:
+        # Friendlier than erroring: people experimenting with the flag often
+        # forget --apply, and the message guides them to the right thing.
+        print("memory-doctor ingest: skipping commit (dry-run; use --apply)")
+
+    pending = sorted(p for p in cfg.handoffs_dir.glob("*.md"))
+    if not pending:
+        print("memory-doctor ingest: no pending handoffs")
+        return 0
+
+    if apply:
+        # The first pass happens before transaction construction. This second
+        # pass closes the race between the static preflight and the first
+        # mutation while the caller holds the apply lock.
+        rc = _apply_preflight(
+            cfg,
+            pending,
+            commit=commit,
+            commit_author=commit_author,
+        )
+        if rc != 0:
+            return rc
 
     if apply:
         (cfg.handoffs_dir / "processed").mkdir(exist_ok=True)
@@ -229,19 +370,41 @@ def run(
     skipped = 0
     for p in pending:
         try:
+            source_identity = (
+                transaction.handoff_identity(p) if transaction else None
+            )
             parsed = parse_handoff(p)
+            if (
+                transaction
+                and transaction.handoff_identity(p) != source_identity
+            ):
+                raise TransactionRecoveryError(
+                    f"handoff {p.name} changed while it was parsed"
+                )
         except HandoffParseError as e:
             print(f"  {p.name}: PARSE ERROR - {e}")
             all_ok = False
             skipped += 1
             continue
-        msg, ok = _process_handoff(parsed, cfg.memory_dir, cfg.handoffs_dir, apply=apply, force=force, touched=touched)
+        msg, ok = _process_handoff(
+            parsed,
+            cfg.memory_dir,
+            cfg.handoffs_dir,
+            apply=apply,
+            force=force,
+            touched=touched,
+            transaction=transaction,
+            source_identity=source_identity,
+        )
         print(f"  {msg}")
         if ok:
             promoted += 1
         else:
             skipped += 1
             all_ok = False
+
+    if apply and transaction:
+        transaction.commit()
 
     if apply and commit and touched:
         if skipped == 0:
@@ -270,9 +433,130 @@ def run(
             print(f"  details: {result.error_message}", file=sys.stderr)
             return 1
         else:
-            print(f"\nerror: commit failed ({result.error_kind}): {result.error_message}", file=sys.stderr)
+            print(
+                f"\nerror: commit failed ({result.error_kind}): {result.error_message}\n"
+                "  file changes are preserved; review `git status` and commit them manually",
+                file=sys.stderr,
+            )
             return 1
     elif apply and commit and not touched:
         print("\nno changes to commit")
 
     return 0 if all_ok else 1
+
+
+def run(
+    cfg: PathConfig,
+    *,
+    apply: bool = False,
+    force: bool = False,
+    commit: bool = False,
+    commit_author: str | None = None,
+) -> int:
+    if not apply:
+        return _run(
+            cfg,
+            apply=False,
+            force=force,
+            commit=commit,
+            commit_author=commit_author,
+        )
+
+    try:
+        recovery_pending = has_pending_transaction_recovery(cfg.memory_dir)
+    except TransactionRecoveryError as exc:
+        print(
+            f"memory-doctor ingest: transaction recovery incomplete: {exc}",
+            file=sys.stderr,
+        )
+        return 2
+
+    pending = sorted(path for path in cfg.handoffs_dir.glob("*.md"))
+    if not pending and not recovery_pending:
+        try:
+            recovery_pending = has_pending_transaction_recovery(cfg.memory_dir)
+        except TransactionRecoveryError as exc:
+            print(
+                f"memory-doctor ingest: transaction recovery incomplete: {exc}",
+                file=sys.stderr,
+            )
+            return 2
+        if not recovery_pending:
+            return _run(
+                cfg,
+                apply=True,
+                force=force,
+                commit=commit,
+                commit_author=commit_author,
+            )
+
+    if not recovery_pending:
+        rc = _apply_preflight(
+            cfg,
+            pending,
+            commit=commit,
+            commit_author=commit_author,
+        )
+        if rc != 0:
+            return rc
+
+    try:
+        preflight_transaction_capabilities(cfg.memory_dir, cfg.handoffs_dir)
+        transaction = ApplyTransaction(cfg.memory_dir, cfg.handoffs_dir)
+    except (OSError, RuntimeError, TransactionRecoveryError) as exc:
+        print(
+            f"memory-doctor ingest: transaction recovery incomplete: {exc}",
+            file=sys.stderr,
+        )
+        return 2
+
+    entered = False
+    try:
+        with transaction:
+            entered = True
+            transaction.preflight_mutations()
+            if transaction.recovered:
+                print(
+                    "memory-doctor ingest: recovered an interrupted apply transaction",
+                    file=sys.stderr,
+                )
+            return _run(
+                cfg,
+                apply=True,
+                force=force,
+                commit=commit,
+                commit_author=commit_author,
+                transaction=transaction,
+            )
+    except TransactionRecoveryError as exc:
+        print(
+            f"memory-doctor ingest: transaction recovery incomplete: {exc}",
+            file=sys.stderr,
+        )
+        return 2
+    except OSError as exc:
+        if not entered:
+            print(
+                f"memory-doctor ingest: transaction recovery incomplete: {exc}",
+                file=sys.stderr,
+            )
+            return 2
+        outcome = "changes preserved" if transaction.committed else "changes rolled back"
+        print(
+            f"memory-doctor ingest: apply failed ({outcome}): {exc}",
+            file=sys.stderr,
+        )
+        return 1
+    except Exception as exc:
+        if not entered:
+            print(
+                f"memory-doctor ingest: transaction recovery incomplete: {exc}",
+                file=sys.stderr,
+            )
+            return 2
+        outcome = "changes preserved" if transaction.committed else "changes rolled back"
+        print(
+            f"memory-doctor ingest: apply failed ({outcome}): {exc}",
+            file=sys.stderr,
+        )
+        return 1

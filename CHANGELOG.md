@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Bounded handoff ingestion: parsing now rejects handoff files over 1 MiB and suggested card content over 256 KiB before changing a target card, with the configured byte limit included in parse errors.
+- Apply operations now use a per-memory-directory exclusive lock and recovery journal, restoring card, index, and handoff state after partial write or move failures.
 - Byte-size awareness for MEMORY.md. The Claude Code harness silently drops index content beyond a ~24.4KB read limit, so `status` now reports a byte threshold (default 24000) alongside the line threshold, with OVER/ok markers and new `over_bytes` + `max_bytes` JSON fields. Configure via `--max-bytes N` or `MEMORY_DOCTOR_MAX_BYTES`.
 - `compact` now tightens overlong single-line index entries, not just multi-line ones. When a one-line hook exceeds `max_hook_chars` (default 140) and its linked card exists, the full hook is appended to the card under an idempotent `## From index (date)` breadcrumb and the index line is rewritten with a word-boundary-truncated hook. No pointer or content is lost; re-running is a no-op.
 - `compact` now triggers when MEMORY.md is over EITHER the line threshold OR the byte threshold, so an index of long single-line entries no longer slips past compaction.
@@ -20,6 +21,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--no-commit` suppresses both the mode and notice. Commit author overrides
   from CLI flags and environment variables now reject control characters and
   malformed names or email addresses before writes.
+- Ingest refuses collisions in `processed/<handoff-name>` before mutation, and
+  the unused Git-only rollback helper has been removed in favor of transaction
+  snapshots that work with or without Git.
 - Git preflight now resolves operation state in linked worktrees, fails closed when `git status` errors, and parses NUL-delimited porcelain output for renamed and space-containing paths.
 - Verification now builds and installs the wheel in an isolated environment, smokes the installed console script, and checks package metadata against the single-sourced module version.
 - `init-git` now reports subprocess failures without tracebacks, validates Git identity before staging, limits the initial commit to intended memory files, and resumes repositories that have no first commit.

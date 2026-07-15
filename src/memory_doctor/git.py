@@ -257,34 +257,3 @@ def validate_author_format(author: str | None) -> str | None:
     except ValueError as e:
         return str(e)
     return None
-
-
-def rollback_files(memory_dir: Path, files: list[Path]) -> None:
-    """Best-effort revert each file to its HEAD state.
-
-    For previously-tracked files: restore from `git show HEAD:<path>`.
-    For new (untracked) files: delete from disk.
-    Missing files are a no-op. Never raises; rollback failures are logged
-    to stderr and swallowed, because rollback is itself an error-path call
-    and we don't want to mask the original failure.
-    """
-    import sys
-    for f in files:
-        if not f.exists():
-            continue
-        rel = str(f.resolve().relative_to(memory_dir.resolve()))
-        show = subprocess.run(
-            ["git", "-C", str(memory_dir), "show", f"HEAD:{rel}"],
-            capture_output=True, text=True, check=False,
-        )
-        if show.returncode == 0:
-            try:
-                f.write_text(show.stdout)
-            except OSError as e:
-                print(f"rollback: failed to restore {rel}: {e}", file=sys.stderr)
-        else:
-            # No HEAD version means the file was new; delete it.
-            try:
-                f.unlink()
-            except OSError as e:
-                print(f"rollback: failed to delete {rel}: {e}", file=sys.stderr)

@@ -9,6 +9,24 @@ from memory_doctor import safety
 from memory_doctor.safety import UnsafeTargetError, atomic_write_text, resolve_card_target
 
 
+def test_atomic_write_uses_utf8_when_locale_default_is_legacy(
+    tmp_path: Path, monkeypatch
+):
+    path = tmp_path / "card.md"
+    real_fdopen = os.fdopen
+
+    def legacy_default(fd, mode, *args, **kwargs):
+        if kwargs.get("encoding") is None:
+            kwargs["encoding"] = "cp1252"
+        return real_fdopen(fd, mode, *args, **kwargs)
+
+    monkeypatch.setattr(safety.os, "fdopen", legacy_default)
+
+    atomic_write_text(path, "café — durable\n")
+
+    assert path.read_bytes() == "café — durable\n".encode("utf-8")
+
+
 @pytest.mark.skipif(os.name != "posix", reason="requires POSIX file modes")
 def test_atomic_write_preserves_existing_mode(tmp_path: Path):
     path = tmp_path / "card.md"
