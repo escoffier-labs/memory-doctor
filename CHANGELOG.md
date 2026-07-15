@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   malformed names or email addresses before writes.
 - Git preflight now resolves operation state in linked worktrees, fails closed when `git status` errors, and parses NUL-delimited porcelain output for renamed and space-containing paths.
 - Verification now builds and installs the wheel in an isolated environment, smokes the installed console script, and checks package metadata against the single-sourced module version.
+- `init-git` now reports subprocess failures without tracebacks, validates Git identity before staging, limits the initial commit to intended memory files, and resumes repositories that have no first commit.
 - Atomic writes now retain existing POSIX file modes, sync replacement content before the rename, and sync the parent directory where supported.
 - README now leads with a recorded terminal demo (`docs/assets/memory-doctor-check.svg`, reproducible from `memory-doctor-check.cast`) of `status` + `lint`, and adds `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`, and issue / pull-request templates.
 - README adopts the fleet adoption-upgrade layout: a what / why / how-it-differs opener, a prominent website link, a keyword-rich "What it does" section, a copy-paste quickstart, and "Why not other tools?" plus "What memory-doctor is not" sections.

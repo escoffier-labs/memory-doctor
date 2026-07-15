@@ -134,6 +134,11 @@ memory-doctor ingest --apply --commit
 memory-doctor compact --apply --commit
 ```
 
+`init-git` checks the effective `user.name` and `user.email`, then commits only
+top-level memory Markdown files plus `.gitignore`. If initialization stops
+before the first commit, fix the reported Git error and rerun the same command;
+it resumes the partial repository.
+
 Off by default; opt in via `--commit` or `MEMORY_DOCTOR_COMMIT=1`. When the
 environment variable enables commit mode without an explicit `--commit`, the
 CLI prints a notice naming the variable. `--no-commit` overrides the env var
