@@ -53,6 +53,7 @@ def atomic_write_text(path: Path, content: str) -> None:
         existing_mode = None
 
     fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
+    replaced = False
     try:
         with os.fdopen(fd, "w") as f:
             f.write(content)
@@ -61,12 +62,14 @@ def atomic_write_text(path: Path, content: str) -> None:
                 os.chmod(tmp, existing_mode)
             os.fsync(f.fileno())
         os.replace(tmp, path)
+        replaced = True
         _fsync_directory(path.parent)
     except Exception:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
+        if not replaced:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
         raise
 
 

@@ -106,6 +106,32 @@ def test_atomic_write_propagates_directory_fsync_io_errors(
     assert path.read_text() == "new"
 
 
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX directory fsync")
+def test_atomic_write_does_not_unlink_temp_after_replacement(
+    tmp_path: Path, monkeypatch
+):
+    path = tmp_path / "card.md"
+    path.write_text("old")
+    real_fsync = os.fsync
+    unlink_calls: list[Path] = []
+
+    def fail_directory_fsync(fd: int) -> None:
+        if stat.S_ISDIR(os.fstat(fd).st_mode):
+            raise OSError(errno.EIO, "directory fsync failed")
+        real_fsync(fd)
+
+    def record_unlink(target) -> None:
+        unlink_calls.append(Path(target))
+
+    monkeypatch.setattr(safety.os, "fsync", fail_directory_fsync)
+    monkeypatch.setattr(safety.os, "unlink", record_unlink)
+
+    with pytest.raises(OSError, match="directory fsync failed"):
+        atomic_write_text(path, "new")
+
+    assert unlink_calls == []
+
+
 def test_happy_path_flat_filename(memory_dir: Path):
     out = resolve_card_target(memory_dir, "foo.md")
     assert out == (memory_dir / "foo.md").resolve()
