@@ -81,3 +81,167 @@ def test_compact_no_commit_flag_overrides_env(memory_dir, handoffs_dir):
     parser = build_parser()
     args = parser.parse_args(["compact", "--apply", "--no-commit"])
     assert args.no_commit is True
+
+
+def test_env_commit_prints_activation_notice(memory_dir, handoffs_dir):
+    write_handoff(
+        handoffs_dir,
+        "env-commit.md",
+        action="create-card",
+        target="env-commit.md",
+        content="body",
+    )
+
+    result = run_cli(
+        [
+            "ingest",
+            "--memory-dir",
+            str(memory_dir),
+            "--handoffs-dir",
+            str(handoffs_dir),
+        ],
+        env={"MEMORY_DOCTOR_COMMIT": "1"},
+    )
+
+    assert result.returncode == 0
+    assert (
+        "notice: commit mode enabled by MEMORY_DOCTOR_COMMIT"
+        in result.stderr
+    )
+    assert "use --no-commit to disable" in result.stderr
+
+
+def test_no_commit_suppresses_env_activation_notice(memory_dir, handoffs_dir):
+    write_handoff(
+        handoffs_dir,
+        "env-no-commit.md",
+        action="create-card",
+        target="env-no-commit.md",
+        content="body",
+    )
+
+    result = run_cli(
+        [
+            "ingest",
+            "--no-commit",
+            "--memory-dir",
+            str(memory_dir),
+            "--handoffs-dir",
+            str(handoffs_dir),
+        ],
+        env={"MEMORY_DOCTOR_COMMIT": "1"},
+    )
+
+    assert result.returncode == 0
+    assert "commit mode enabled by MEMORY_DOCTOR_COMMIT" not in result.stderr
+    assert "skipping commit" not in result.stdout
+
+
+def test_explicit_commit_suppresses_env_activation_notice(memory_dir, handoffs_dir):
+    result = run_cli(
+        [
+            "compact",
+            "--commit",
+            "--memory-dir",
+            str(memory_dir),
+            "--handoffs-dir",
+            str(handoffs_dir),
+        ],
+        env={"MEMORY_DOCTOR_COMMIT": "1"},
+    )
+
+    assert result.returncode == 0
+    assert "commit mode enabled by MEMORY_DOCTOR_COMMIT" not in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("source", "author"),
+    [
+        ("cli", "Bad\nName <bad@example.com>"),
+        ("env", "Bad\tName <bad@example.com>"),
+        ("cli", "Bad>Name <bad@example.com>"),
+        ("env", "Bad>Name <bad@example.com>"),
+        ("cli", "Person <not-an-email>"),
+        ("env", "Person <not-an-email>"),
+        ("cli", "Person < user@example.com>"),
+        ("env", "Person <user@example.com >"),
+        ("cli", "Person <user @example.com>"),
+    ],
+)
+def test_commit_author_rejects_unsafe_cli_and_env_values(
+    git_memory_dir, handoffs_dir, source, author
+):
+    write_handoff(
+        handoffs_dir,
+        "unsafe-author.md",
+        action="create-card",
+        target="unsafe-author.md",
+        content="body",
+    )
+    args = [
+        "ingest",
+        "--apply",
+        "--memory-dir",
+        str(git_memory_dir),
+        "--handoffs-dir",
+        str(handoffs_dir),
+    ]
+    env = {}
+    if source == "cli":
+        args.extend(["--commit", "--commit-author", author])
+    else:
+        env.update(
+            {
+                "MEMORY_DOCTOR_COMMIT": "1",
+                "MEMORY_DOCTOR_COMMIT_AUTHOR": author,
+            }
+        )
+
+    result = run_cli(args, env=env)
+
+    assert result.returncode == 2
+    assert "invalid --commit-author" in result.stderr
+    assert not (git_memory_dir / "unsafe-author.md").exists()
+    assert (handoffs_dir / "unsafe-author.md").exists()
+
+
+@pytest.mark.parametrize("source", ["cli", "env"])
+def test_commit_author_rejects_empty_cli_and_env_values(
+    git_memory_dir, handoffs_dir, source
+):
+    fresh_handoffs_dir = handoffs_dir.parent / f"handoffs-without-processed-{source}"
+    fresh_handoffs_dir.mkdir()
+    write_handoff(
+        fresh_handoffs_dir,
+        "empty-author.md",
+        action="create-card",
+        target="empty-author.md",
+        content="body",
+    )
+    args = [
+        "ingest",
+        "--apply",
+        "--memory-dir",
+        str(git_memory_dir),
+        "--handoffs-dir",
+        str(fresh_handoffs_dir),
+    ]
+    env = {}
+    if source == "cli":
+        args.extend(["--commit", "--commit-author", ""])
+        env["MEMORY_DOCTOR_COMMIT_AUTHOR"] = "Environment Author <env@example.com>"
+    else:
+        env.update(
+            {
+                "MEMORY_DOCTOR_COMMIT": "1",
+                "MEMORY_DOCTOR_COMMIT_AUTHOR": "",
+            }
+        )
+
+    result = run_cli(args, env=env)
+
+    assert result.returncode == 2
+    assert "invalid --commit-author" in result.stderr
+    assert not (git_memory_dir / "empty-author.md").exists()
+    assert (fresh_handoffs_dir / "empty-author.md").exists()
+    assert not (fresh_handoffs_dir / "processed").exists()

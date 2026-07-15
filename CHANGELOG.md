@@ -16,6 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Environment-enabled commit mode now prints an explicit notice, while
+  `--no-commit` suppresses both the mode and notice. Commit author overrides
+  from CLI flags and environment variables now reject control characters and
+  malformed names or email addresses before writes.
 - Git preflight now resolves operation state in linked worktrees, fails closed when `git status` errors, and parses NUL-delimited porcelain output for renamed and space-containing paths.
 - Verification now builds and installs the wheel in an isolated environment, smokes the installed console script, and checks package metadata against the single-sourced module version.
 - Atomic writes now retain existing POSIX file modes, sync replacement content before the rename, and sync the parent directory where supported.

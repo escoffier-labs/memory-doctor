@@ -134,7 +134,15 @@ memory-doctor ingest --apply --commit
 memory-doctor compact --apply --commit
 ```
 
-Off by default; opt in via `--commit` or `MEMORY_DOCTOR_COMMIT=1`. `--no-commit` overrides the env var for a single run.
+Off by default; opt in via `--commit` or `MEMORY_DOCTOR_COMMIT=1`. When the
+environment variable enables commit mode without an explicit `--commit`, the
+CLI prints a notice naming the variable. `--no-commit` overrides the env var
+for a single run and suppresses that notice.
+
+Author overrides must use the printable `Name <local@domain>` form. Values
+from either `--commit-author` or `MEMORY_DOCTOR_COMMIT_AUTHOR` are rejected
+before writes if the name or email is malformed or contains control
+characters.
 
 Pre-flight checks (any failure aborts the run, writes nothing):
 1. Memory dir is a git repo (otherwise: `run memory-doctor init-git`).

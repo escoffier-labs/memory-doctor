@@ -63,8 +63,20 @@ def _resolve_commit_flag(args) -> bool:
     return os.environ.get("MEMORY_DOCTOR_COMMIT", "").strip() in ("1", "true", "yes")
 
 
+def _env_enabled_commit(args) -> bool:
+    """True when the environment, rather than a CLI flag, enabled commits."""
+    return (
+        not getattr(args, "no_commit", False)
+        and not getattr(args, "commit", False)
+        and _resolve_commit_flag(args)
+    )
+
+
 def _resolve_commit_author(args) -> str | None:
-    return getattr(args, "commit_author", None) or os.environ.get("MEMORY_DOCTOR_COMMIT_AUTHOR") or None
+    cli_author = getattr(args, "commit_author", None)
+    if cli_author is not None:
+        return cli_author
+    return os.environ.get("MEMORY_DOCTOR_COMMIT_AUTHOR")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -90,16 +102,30 @@ def main(argv: list[str] | None = None) -> int:
         return run_lint(cfg)
     if args.verb == "ingest":
         from memory_doctor.ingest import run as run_ingest
+        commit = _resolve_commit_flag(args)
+        if _env_enabled_commit(args):
+            print(
+                "memory-doctor: notice: commit mode enabled by "
+                "MEMORY_DOCTOR_COMMIT (use --no-commit to disable)",
+                file=sys.stderr,
+            )
         return run_ingest(
             cfg, apply=args.apply, force=args.force,
-            commit=_resolve_commit_flag(args),
+            commit=commit,
             commit_author=_resolve_commit_author(args),
         )
     if args.verb == "compact":
         from memory_doctor.compact import run as run_compact
+        commit = _resolve_commit_flag(args)
+        if _env_enabled_commit(args):
+            print(
+                "memory-doctor: notice: commit mode enabled by "
+                "MEMORY_DOCTOR_COMMIT (use --no-commit to disable)",
+                file=sys.stderr,
+            )
         return run_compact(
             cfg, apply=args.apply,
-            commit=_resolve_commit_flag(args),
+            commit=commit,
             commit_author=_resolve_commit_author(args),
         )
     if args.verb == "init-git":
