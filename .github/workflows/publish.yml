@@ -24,10 +24,10 @@ jobs:
         run: |
           set -e
           tag_version="${GITHUB_REF_NAME#v}"
-          pkg_version=$(python -c "import tomllib; print(tomllib.loads(open('pyproject.toml','rb').read().decode())['project']['version'])")
+          pkg_version=$(PYTHONPATH=src python -c 'from memory_doctor import __version__; print(__version__)')
           echo "tag=$tag_version pkg=$pkg_version"
           if [ "$tag_version" != "$pkg_version" ]; then
-            echo "::error::tag $tag_version does not match pyproject.toml version $pkg_version"
+            echo "::error::tag $tag_version does not match package version $pkg_version"
             exit 1
           fi
 
