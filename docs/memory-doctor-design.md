@@ -1,5 +1,9 @@
 # memory-doctor Design
 
+> **Historical design document.** This captures the original four-verb,
+> pre-Git design and its initial thresholds. For current commands, defaults,
+> safety rules, and commit behavior, use the [README](../README.md).
+
 A maintenance CLI for the Claude Code / OpenClaw file-based memory system. Four verbs - `status`, `ingest`, `compact`, `lint` - that keep a long-running memory directory healthy without manual file edits. Default dry-run on anything that writes; `--apply` to commit.
 
 ## Problem

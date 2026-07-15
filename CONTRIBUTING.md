@@ -7,7 +7,7 @@ bar is "keeps memory healthy without ever losing content."
 
 ```bash
 python3 -m pip install -e ".[dev]"
-scripts/verify          # lint, type-check, and tests
+scripts/verify          # full pytest suite
 ```
 
 ## What lands easily
