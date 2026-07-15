@@ -5,7 +5,7 @@
 ./scripts/verify
 ```
 It runs the full test suite (`python3 -m pytest -q`) from the repo root.
-- Before claiming any task complete, run `./scripts/verify` and report the actual result (e.g. "101 passed").
+- Before claiming any task complete, run `./scripts/verify` and report the actual result (144 tests collected; the Brigade parity check skips when that optional import is unavailable).
 - If anything fails, paste the failure output verbatim and say the task is not done. Never claim success without a fresh passing run.
 
 ## Project Shape
@@ -16,7 +16,7 @@ It runs the full test suite (`python3 -m pytest -q`) from the repo root.
 - `dist/`, `memory/`, `.brigade/`, `.venv/`, and `.claude/` are local artifacts and are gitignored. Do not commit them. `docs/` holds the design doc plus the spec and plan for the git integration.
 
 ## Verification
-- Full suite: `python3 -m pytest -q` from the repo root (101 tests, under a second). pyproject sets `pythonpath = ["src"]` for pytest, so no editable install is needed.
+- Full suite: `python3 -m pytest -q` from the repo root (144 tests, under two seconds). pyproject sets `pythonpath = ["src"]` for pytest, so no editable install is needed.
 - Targeted: `python3 -m pytest -q tests/test_<area>.py` (one test file per module: cli, parsing, compact, git, ingest, init_git, paths, lint, safety, status).
 - Manual smoke: `PYTHONPATH=src python3 -m memory_doctor.cli status --memory-dir <tmp> --handoffs-dir <tmp>`. Bare `python3 -m memory_doctor.cli` fails outside pytest (module not on path). `.venv/bin/memory-doctor` also works.
 - If a command you expect is missing, report the exact error and stop. Do not invent commands or guess flags; check `pyproject.toml` and `--help` first.
