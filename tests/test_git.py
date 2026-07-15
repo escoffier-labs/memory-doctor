@@ -234,10 +234,34 @@ def test_commit_run_with_author_override(git_memory_dir):
     )
     assert result.error_kind is None
     log = subprocess.run(
-        ["git", "-C", str(git_memory_dir), "log", "-1", "--format=%an <%ae>"],
+        [
+            "git", "-C", str(git_memory_dir), "log", "-1",
+            "--format=%an <%ae>|%cn <%ce>",
+        ],
         capture_output=True, text=True, check=True,
     ).stdout.strip()
-    assert log == "Bob <bob@example.com>"
+    assert log == "Bob <bob@example.com>|Test <test@example.com>"
+
+
+def test_commit_run_rejects_empty_author(git_memory_dir):
+    f = git_memory_dir / "card-empty-author.md"
+    f.write_text("x\n")
+
+    result = commit_run(
+        memory_dir=git_memory_dir,
+        files=[f],
+        subject="memory-doctor ingest: 1 handoff promoted",
+        body="- card-empty-author.md",
+        author="",
+    )
+
+    assert result.error_kind == "author"
+    assert "missing name or email" in result.error_message
+    status = subprocess.run(
+        ["git", "-C", str(git_memory_dir), "status", "--porcelain", "--", str(f)],
+        capture_output=True, text=True, check=True,
+    ).stdout
+    assert status.startswith("??")
 
 
 def test_commit_run_no_ai_trailers(git_memory_dir):

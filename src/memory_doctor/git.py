@@ -163,13 +163,14 @@ def commit_run(
     """Stage `files` and create a commit with the given subject/body.
 
     Uses `git commit -- <files>` pathspec form so other staged content is
-    not pulled into our commit. Author override via -c user.name/email.
+    not pulled into our commit. Author override applies only to the author;
+    the committer continues to come from Git's configured identity.
     Never passes --no-verify; pre-commit hooks run normally.
     """
     if not files:
         return CommitResult()
 
-    if author:
+    if author is not None:
         try:
             name, email = _parse_author(author)
         except ValueError as e:
@@ -189,10 +190,10 @@ def commit_run(
             error_message=add_result.stderr.strip() or add_result.stdout.strip(),
         )
 
-    cmd = ["git", "-C", str(memory_dir)]
+    cmd = ["git", "-C", str(memory_dir), "commit", "--quiet"]
     if name and email:
-        cmd += ["-c", f"user.name={name}", "-c", f"user.email={email}"]
-    cmd += ["commit", "--quiet", "-m", subject, "-m", body, "--", *rel]
+        cmd.append(f"--author={name} <{email}>")
+    cmd += ["-m", subject, "-m", body, "--", *rel]
 
     commit_result = subprocess.run(cmd, capture_output=True, text=True, check=False)
     if commit_result.returncode != 0:
@@ -221,19 +222,35 @@ def commit_run(
 
 def _parse_author(spec: str) -> tuple[str, str]:
     """Parse 'Name <email>' into (name, email). Raises ValueError on bad format."""
-    if "<" not in spec or not spec.rstrip().endswith(">"):
-        raise ValueError(f"author must be in 'Name <email>' format, got: {spec!r}")
-    name_part, email_part = spec.split("<", 1)
-    name = name_part.strip()
-    email = email_part.rstrip(">").strip()
-    if not name or not email:
+    normalized = spec.strip()
+    if not normalized:
         raise ValueError(f"author missing name or email: {spec!r}")
+    if not spec.isprintable():
+        raise ValueError("author must not contain control characters")
+    if (
+        normalized.count("<") != 1
+        or normalized.count(">") != 1
+        or not normalized.endswith(">")
+    ):
+        raise ValueError(f"author must be in 'Name <email>' format, got: {spec!r}")
+    name_part, email_part = normalized.split("<", 1)
+    name = name_part.strip()
+    email = email_part[:-1]
+    if not name or not email.strip():
+        raise ValueError(f"author missing name or email: {spec!r}")
+    if any(char.isspace() for char in email):
+        raise ValueError("author email must not contain whitespace")
+    if email.count("@") != 1:
+        raise ValueError("author email must contain exactly one '@'")
+    local, domain = email.split("@", 1)
+    if not local or not domain:
+        raise ValueError("author email must include text before and after '@'")
     return name, email
 
 
 def validate_author_format(author: str | None) -> str | None:
     """Return an error message when author is not in 'Name <email>' format."""
-    if not author:
+    if author is None:
         return None
     try:
         _parse_author(author)

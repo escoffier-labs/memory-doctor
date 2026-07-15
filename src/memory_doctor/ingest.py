@@ -182,9 +182,6 @@ def run(
         # forget --apply, and the message guides them to the right thing.
         print("memory-doctor ingest: skipping commit (dry-run; use --apply)")
 
-    if apply:
-        (cfg.handoffs_dir / "processed").mkdir(exist_ok=True)
-
     pending = sorted(p for p in cfg.handoffs_dir.glob("*.md"))
     if not pending:
         print("memory-doctor ingest: no pending handoffs")
@@ -220,6 +217,9 @@ def run(
                 file=sys.stderr,
             )
             return 2
+
+    if apply:
+        (cfg.handoffs_dir / "processed").mkdir(exist_ok=True)
 
     mode = "APPLY" if apply else "dry-run"
     print(f"memory-doctor ingest ({mode}): {len(pending)} handoff(s)")
