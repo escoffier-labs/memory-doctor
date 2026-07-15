@@ -29,16 +29,15 @@ def _fsync_directory(path: Path) -> None:
     if os.name != "posix":
         return
     flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
-    fd = None
+    fd = os.open(path, flags)
     try:
-        fd = os.open(path, flags)
-        os.fsync(fd)
-    except OSError as exc:
-        if exc.errno not in _UNSUPPORTED_DIRECTORY_FSYNC_ERRNOS:
-            raise
+        try:
+            os.fsync(fd)
+        except OSError as exc:
+            if exc.errno not in _UNSUPPORTED_DIRECTORY_FSYNC_ERRNOS:
+                raise
     finally:
-        if fd is not None:
-            os.close(fd)
+        os.close(fd)
 
 
 def atomic_write_text(path: Path, content: str) -> None:

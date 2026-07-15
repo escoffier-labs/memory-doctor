@@ -66,6 +66,46 @@ def test_atomic_write_ignores_unsupported_directory_fsync(
     assert path.read_text() == "new"
 
 
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX directory fsync")
+def test_atomic_write_propagates_directory_open_errors(tmp_path: Path, monkeypatch):
+    path = tmp_path / "card.md"
+    path.write_text("old")
+    real_open = os.open
+
+    def reject_directory_open(target, flags: int, mode: int = 0o777) -> int:
+        if Path(target) == tmp_path:
+            raise OSError(errno.EINVAL, "directory open failed")
+        return real_open(target, flags, mode)
+
+    monkeypatch.setattr(safety.os, "open", reject_directory_open)
+
+    with pytest.raises(OSError, match="directory open failed"):
+        atomic_write_text(path, "new")
+
+    assert path.read_text() == "new"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX directory fsync")
+def test_atomic_write_propagates_directory_fsync_io_errors(
+    tmp_path: Path, monkeypatch
+):
+    path = tmp_path / "card.md"
+    path.write_text("old")
+    real_fsync = os.fsync
+
+    def fail_directory_fsync(fd: int) -> None:
+        if stat.S_ISDIR(os.fstat(fd).st_mode):
+            raise OSError(errno.EIO, "directory fsync failed")
+        real_fsync(fd)
+
+    monkeypatch.setattr(safety.os, "fsync", fail_directory_fsync)
+
+    with pytest.raises(OSError, match="directory fsync failed"):
+        atomic_write_text(path, "new")
+
+    assert path.read_text() == "new"
+
+
 def test_happy_path_flat_filename(memory_dir: Path):
     out = resolve_card_target(memory_dir, "foo.md")
     assert out == (memory_dir / "foo.md").resolve()
