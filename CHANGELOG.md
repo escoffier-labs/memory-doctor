@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Bounded handoff ingestion: parsing now rejects handoff files over 1 MiB and suggested card content over 256 KiB before changing a target card, with the configured byte limit included in parse errors.
 - Byte-size awareness for MEMORY.md. The Claude Code harness silently drops index content beyond a ~24.4KB read limit, so `status` now reports a byte threshold (default 24000) alongside the line threshold, with OVER/ok markers and new `over_bytes` + `max_bytes` JSON fields. Configure via `--max-bytes N` or `MEMORY_DOCTOR_MAX_BYTES`.
 - `compact` now tightens overlong single-line index entries, not just multi-line ones. When a one-line hook exceeds `max_hook_chars` (default 140) and its linked card exists, the full hook is appended to the card under an idempotent `## From index (date)` breadcrumb and the index line is rewritten with a word-boundary-truncated hook. No pointer or content is lost; re-running is a no-op.
 - `compact` now triggers when MEMORY.md is over EITHER the line threshold OR the byte threshold, so an index of long single-line entries no longer slips past compaction.

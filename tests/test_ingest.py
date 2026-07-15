@@ -5,6 +5,7 @@ from unittest.mock import patch
 from tests.conftest import write_handoff
 from memory_doctor.paths import PathConfig
 from memory_doctor.ingest import run
+from memory_doctor.parsing import MAX_HANDOFF_BYTES, MAX_SUGGESTED_CONTENT_BYTES
 
 
 def cfg(memory_dir, handoffs_dir):
@@ -131,6 +132,48 @@ def test_ingest_update_uses_atomic_write(memory_dir, handoffs_dir):
     payload = spy.call_args.args[1]
     assert "original" in payload
     assert "appended" in payload
+
+
+def test_oversized_handoff_does_not_overwrite_create_target(memory_dir, handoffs_dir, capsys):
+    target = memory_dir / "existing.md"
+    target.write_text("sentinel\n")
+    handoff = handoffs_dir / "oversized-create.md"
+    write_handoff(
+        handoffs_dir,
+        handoff.name,
+        action="create-card",
+        target=target.name,
+        content="x" * MAX_HANDOFF_BYTES,
+    )
+
+    code = run(cfg(memory_dir, handoffs_dir), apply=True, force=True)
+
+    assert code == 1
+    assert f"{MAX_HANDOFF_BYTES} byte limit" in capsys.readouterr().out
+    assert target.read_text() == "sentinel\n"
+    assert handoff.exists()
+    assert not (handoffs_dir / "processed" / handoff.name).exists()
+
+
+def test_oversized_suggested_content_does_not_append_target(memory_dir, handoffs_dir, capsys):
+    target = memory_dir / "growing.md"
+    target.write_text("sentinel\n")
+    handoff = handoffs_dir / "oversized-update.md"
+    write_handoff(
+        handoffs_dir,
+        handoff.name,
+        action="update-card",
+        target=target.name,
+        content="x" * (MAX_SUGGESTED_CONTENT_BYTES + 1),
+    )
+
+    code = run(cfg(memory_dir, handoffs_dir), apply=True, force=False)
+
+    assert code == 1
+    assert f"{MAX_SUGGESTED_CONTENT_BYTES} byte limit" in capsys.readouterr().out
+    assert target.read_text() == "sentinel\n"
+    assert handoff.exists()
+    assert not (handoffs_dir / "processed" / handoff.name).exists()
 
 
 def test_multi_handoff_batch(memory_dir, handoffs_dir):
