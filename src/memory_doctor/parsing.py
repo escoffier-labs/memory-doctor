@@ -109,6 +109,8 @@ def parse_handoff(
     max_handoff_bytes: int = MAX_HANDOFF_BYTES,
     max_suggested_content_bytes: int = MAX_SUGGESTED_CONTENT_BYTES,
 ) -> ParsedHandoff:
+    if max_handoff_bytes < 0:
+        raise HandoffParseError(f"{path}: handoff byte limit must be non-negative")
     text = _read_handoff_text(path, max_handoff_bytes)
 
     action_lines = _section_lines(text, "Recommended memory action")

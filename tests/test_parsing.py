@@ -110,6 +110,20 @@ def test_parse_handoff_rejects_file_over_byte_limit(tmp_path: Path):
         parse_handoff(h)
 
 
+def test_parse_handoff_rejects_negative_byte_limit_before_opening(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    h = tmp_path / "must-not-open.md"
+
+    def fail_open(*args, **kwargs):
+        pytest.fail("negative byte limit must be rejected before opening the path")
+
+    monkeypatch.setattr(Path, "open", fail_open)
+
+    with pytest.raises(HandoffParseError, match="byte limit must be non-negative"):
+        parse_handoff(h, max_handoff_bytes=-1)
+
+
 def test_parse_handoff_rejects_suggested_content_over_byte_limit(tmp_path: Path):
     h = tmp_path / "oversized-content.md"
     h.write_text(
