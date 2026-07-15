@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
@@ -60,6 +61,30 @@ def test_working_tree_sane_false_during_bisect(git_memory_dir):
     assert "bisect" in reason.lower()
 
 
+def test_working_tree_sane_detects_operation_in_linked_worktree(git_memory_dir, tmp_path):
+    worktree = tmp_path / "linked-worktree"
+    subprocess.run(
+        ["git", "-C", str(git_memory_dir), "worktree", "add", "-b", "linked", str(worktree)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    git_dir = Path(
+        subprocess.run(
+            ["git", "-C", str(worktree), "rev-parse", "--absolute-git-dir"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+    )
+    (git_dir / "MERGE_HEAD").write_text("deadbeef\n")
+
+    ok, reason = working_tree_sane(worktree)
+
+    assert ok is False
+    assert "merge" in reason.lower()
+
+
 from memory_doctor.git import files_have_uncommitted_changes
 
 
@@ -112,6 +137,63 @@ def test_files_have_uncommitted_changes_ignores_other_files(git_memory_dir):
     )
     other.write_text("other modified\n")
     assert files_have_uncommitted_changes(git_memory_dir, [target]) == []
+
+
+def test_files_have_uncommitted_changes_parses_renamed_path(git_memory_dir):
+    old = git_memory_dir / "old card.md"
+    new = git_memory_dir / "new card.md"
+    old.write_text("body\n")
+    subprocess.run(["git", "-C", str(git_memory_dir), "add", "--", old.name], check=True)
+    subprocess.run(
+        ["git", "-C", str(git_memory_dir), "commit", "--quiet", "-m", "add card"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(git_memory_dir), "mv", "--", old.name, new.name],
+        check=True,
+    )
+
+    dirty = files_have_uncommitted_changes(git_memory_dir, [new])
+
+    assert dirty == [(new, "staged")]
+
+
+def test_files_have_uncommitted_changes_uses_nul_delimited_porcelain(
+    git_memory_dir, monkeypatch
+):
+    target = git_memory_dir / "card with spaces.md"
+    target.write_text("body\n")
+    run = Mock(
+        return_value=subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=b"?? card with spaces.md\0", stderr=b""
+        )
+    )
+    monkeypatch.setattr("memory_doctor.git.subprocess.run", run)
+
+    dirty = files_have_uncommitted_changes(git_memory_dir, [target])
+
+    assert dirty == [(target, "untracked")]
+    assert "-z" in run.call_args.args[0]
+    assert run.call_args.kwargs["text"] is False
+
+
+def test_files_have_uncommitted_changes_raises_status_stderr(git_memory_dir, monkeypatch):
+    from memory_doctor import git as git_mod
+
+    target = git_memory_dir / "card.md"
+    target.write_text("body\n")
+    monkeypatch.setattr(
+        git_mod.subprocess,
+        "run",
+        Mock(
+            return_value=subprocess.CompletedProcess(
+                args=[], returncode=128, stdout=b"", stderr=b"fatal: status exploded\n"
+            )
+        ),
+    )
+
+    with pytest.raises(git_mod.GitStatusError, match="fatal: status exploded"):
+        files_have_uncommitted_changes(git_memory_dir, [target])
 
 
 from memory_doctor.git import CommitResult, commit_run
