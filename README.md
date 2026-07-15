@@ -180,10 +180,10 @@ Install test dependencies and run the suite:
 
 ```bash
 python3 -m pip install -e '.[dev]'
-python3 -m pytest -q
+./scripts/verify
 ```
 
-The repo config points pytest at `src/`, so tests also run from a plain checkout without an editable install as long as pytest is available.
+The verification gate runs pytest, builds the wheel, installs it without dependencies in a fresh virtual environment, runs `memory-doctor --version` and a read-only `status`, and checks installed package metadata against the module version.
 
 ## Why not other tools?
 
