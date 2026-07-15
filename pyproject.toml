@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "memory-doctor"
-version = "0.2.0"
+dynamic = ["version"]
 description = "Maintenance CLI for the Claude Code / OpenClaw file-based memory system."
 readme = "README.md"
 license = "MIT"
@@ -32,10 +32,13 @@ Repository = "https://github.com/escoffier-labs/memory-doctor"
 memory-doctor = "memory_doctor.cli:main"
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0"]
+dev = ["hatchling", "pytest>=8.0"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/memory_doctor"]
+
+[tool.hatch.version]
+path = "src/memory_doctor/__init__.py"

@@ -5,3 +5,41 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 python3 -m pytest -q
+
+tmp_dir="$(mktemp -d)"
+trap 'rm -rf "$tmp_dir"' EXIT
+wheel_dir="$tmp_dir/wheelhouse"
+venv_dir="$tmp_dir/venv"
+memory_dir="$tmp_dir/memory"
+handoffs_dir="$tmp_dir/handoffs"
+
+mkdir -p "$wheel_dir" "$memory_dir" "$handoffs_dir"
+: > "$memory_dir/MEMORY.md"
+
+python3 -m pip wheel \
+  --disable-pip-version-check \
+  --no-build-isolation \
+  --no-deps \
+  --wheel-dir "$wheel_dir" \
+  .
+
+shopt -s nullglob
+wheels=("$wheel_dir"/memory_doctor-*.whl)
+if [[ ${#wheels[@]} -ne 1 ]]; then
+  echo "verify: expected exactly one memory-doctor wheel, found ${#wheels[@]}" >&2
+  exit 1
+fi
+
+python3 -m venv "$venv_dir"
+"$venv_dir/bin/python" -m pip install \
+  --disable-pip-version-check \
+  --no-index \
+  --no-deps \
+  "${wheels[0]}"
+
+"$venv_dir/bin/memory-doctor" --version
+"$venv_dir/bin/memory-doctor" status \
+  --memory-dir "$memory_dir" \
+  --handoffs-dir "$handoffs_dir" >/dev/null
+"$venv_dir/bin/python" -c \
+  'from importlib.metadata import version; from memory_doctor import __version__; assert version("memory-doctor") == __version__'
