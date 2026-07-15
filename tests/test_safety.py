@@ -1,8 +1,48 @@
+import os
+import stat
 from pathlib import Path
 
 import pytest
 
-from memory_doctor.safety import UnsafeTargetError, resolve_card_target
+from memory_doctor import safety
+from memory_doctor.safety import UnsafeTargetError, atomic_write_text, resolve_card_target
+
+
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX file modes")
+def test_atomic_write_preserves_existing_mode(tmp_path: Path):
+    path = tmp_path / "card.md"
+    path.write_text("old")
+    path.chmod(0o6750)
+
+    atomic_write_text(path, "new")
+
+    assert path.read_text() == "new"
+    assert stat.S_IMODE(path.stat().st_mode) == 0o6750
+
+
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX directory fsync")
+def test_atomic_write_syncs_file_then_replaces_then_syncs_directory(
+    tmp_path: Path, monkeypatch
+):
+    path = tmp_path / "card.md"
+    path.write_text("old")
+    calls: list[str] = []
+    real_replace = os.replace
+
+    def record_fsync(fd: int) -> None:
+        kind = "directory" if stat.S_ISDIR(os.fstat(fd).st_mode) else "file"
+        calls.append(f"fsync:{kind}")
+
+    def record_replace(src: str, dst: Path) -> None:
+        calls.append("replace")
+        real_replace(src, dst)
+
+    monkeypatch.setattr(safety.os, "fsync", record_fsync)
+    monkeypatch.setattr(safety.os, "replace", record_replace)
+
+    atomic_write_text(path, "new")
+
+    assert calls == ["fsync:file", "replace", "fsync:directory"]
 
 
 def test_happy_path_flat_filename(memory_dir: Path):
