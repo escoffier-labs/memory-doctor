@@ -9,6 +9,11 @@ FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n?", re.DOTALL)
 KV_LINE_RE = re.compile(r"^([a-zA-Z0-9_.-]+)\s*:\s*(.*)$")
 WIKI_LINK_RE = re.compile(r"\[\[([^\[\]\n]+?)\]\]")
 
+# Handoffs are control-plane input. Keep parsing bounded before any ingest
+# mutation, while leaving enough room for detailed operational notes.
+MAX_HANDOFF_BYTES = 1_048_576
+MAX_SUGGESTED_CONTENT_BYTES = 262_144
+
 
 class HandoffParseError(Exception):
     pass
@@ -84,8 +89,27 @@ def _first_nonblank_line(lines: list[str]) -> str:
     return ""
 
 
-def parse_handoff(path: Path) -> ParsedHandoff:
-    text = path.read_text()
+def _read_handoff_text(path: Path, max_bytes: int) -> str:
+    with path.open("rb") as stream:
+        raw = stream.read(max_bytes + 1)
+    if len(raw) > max_bytes:
+        raise HandoffParseError(f"{path}: handoff exceeds {max_bytes} byte limit")
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise HandoffParseError(f"{path}: handoff is not valid UTF-8") from exc
+    # Match Path.read_text()'s universal-newline behavior from the unbounded
+    # implementation so CRLF and legacy lone-CR handoffs remain parseable.
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def parse_handoff(
+    path: Path,
+    *,
+    max_handoff_bytes: int = MAX_HANDOFF_BYTES,
+    max_suggested_content_bytes: int = MAX_SUGGESTED_CONTENT_BYTES,
+) -> ParsedHandoff:
+    text = _read_handoff_text(path, max_handoff_bytes)
 
     action_lines = _section_lines(text, "Recommended memory action")
     if action_lines is None:
@@ -105,8 +129,14 @@ def parse_handoff(path: Path) -> ParsedHandoff:
     # Suggested card content is the FINAL section of the template; parse to EOF
     # so embedded `## ` sub-headings inside the card body are preserved.
     content_lines = _section_lines_to_eof(text, "Suggested card content") or []
-    content = "\n".join(content_lines).strip()
-
+    raw_content = "\n".join(content_lines)
+    content = raw_content.strip()
+    content_bytes = len(content.encode("utf-8"))
+    if content_bytes > max_suggested_content_bytes:
+        raise HandoffParseError(
+            f"{path}: Suggested card content exceeds "
+            f"{max_suggested_content_bytes} byte limit"
+        )
     if action in {"create-card", "update-card"}:
         if not target:
             raise HandoffParseError(f"{path}: action {action} requires 'Target card'")

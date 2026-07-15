@@ -3,6 +3,8 @@ from pathlib import Path
 import pytest
 
 from memory_doctor.parsing import (
+    MAX_HANDOFF_BYTES,
+    MAX_SUGGESTED_CONTENT_BYTES,
     extract_frontmatter,
     extract_wiki_links,
     parse_handoff,
@@ -98,3 +100,68 @@ def test_parse_handoff_multi_paragraph_content(tmp_path: Path):
     parsed = parse_handoff(h)
     assert "Para one." in parsed.content
     assert "Para two." in parsed.content
+
+
+def test_parse_handoff_rejects_file_over_byte_limit(tmp_path: Path):
+    h = tmp_path / "oversized.md"
+    h.write_bytes(b"x" * (MAX_HANDOFF_BYTES + 1))
+
+    with pytest.raises(HandoffParseError, match=rf"{MAX_HANDOFF_BYTES} byte limit"):
+        parse_handoff(h)
+
+
+def test_parse_handoff_rejects_suggested_content_over_byte_limit(tmp_path: Path):
+    h = tmp_path / "oversized-content.md"
+    h.write_text(
+        "## Recommended memory action\ncreate-card\n\n"
+        "## Target card\nfoo.md\n\n"
+        "## Suggested card content\n"
+        + ("x" * (MAX_SUGGESTED_CONTENT_BYTES + 1))
+    )
+
+    with pytest.raises(
+        HandoffParseError,
+        match=rf"Suggested card content exceeds {MAX_SUGGESTED_CONTENT_BYTES} byte limit",
+    ):
+        parse_handoff(h)
+
+
+def test_parse_handoff_accepts_suggested_content_at_byte_limit(tmp_path: Path):
+    h = tmp_path / "content-at-limit.md"
+    h.write_text(
+        "## Recommended memory action\ncreate-card\n\n"
+        "## Target card\nfoo.md\n\n"
+        "## Suggested card content\n"
+        + ("x" * MAX_SUGGESTED_CONTENT_BYTES)
+    )
+
+    parsed = parse_handoff(h)
+
+    assert len(parsed.content.encode("utf-8")) == MAX_SUGGESTED_CONTENT_BYTES
+
+
+def test_parse_handoff_content_limit_counts_utf8_bytes(tmp_path: Path):
+    h = tmp_path / "utf8-content.md"
+    h.write_text(
+        "## Recommended memory action\ncreate-card\n\n"
+        "## Target card\nfoo.md\n\n"
+        "## Suggested card content\néé"
+    )
+
+    with pytest.raises(HandoffParseError, match=r"3 byte limit"):
+        parse_handoff(h, max_suggested_content_bytes=3)
+
+
+def test_parse_handoff_preserves_universal_newline_support(tmp_path: Path):
+    h = tmp_path / "carriage-return-lines.md"
+    h.write_bytes(
+        b"## Recommended memory action\rcreate-card\r\r"
+        b"## Target card\rfoo.md\r\r"
+        b"## Suggested card content\rbody\r"
+    )
+
+    parsed = parse_handoff(h)
+
+    assert parsed.action == "create-card"
+    assert parsed.target == "foo.md"
+    assert parsed.content == "body"

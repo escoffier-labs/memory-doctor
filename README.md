@@ -110,6 +110,7 @@ Sweeps the handoffs dir for unprocessed `*.md` files matching the standard hando
 - `Recommended memory action: no-card` just moves the handoff to `processed/`
 
 Successful handoffs are moved into `<handoffs-dir>/processed/`. Dry-run by default; `--apply` writes.
+Parsing is capped at 1 MiB per handoff and 256 KiB for the suggested card content. Oversized handoffs fail before any target card is changed and the error reports the applicable byte limit.
 
 ### `compact`
 
