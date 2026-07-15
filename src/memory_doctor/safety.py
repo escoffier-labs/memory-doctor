@@ -5,7 +5,9 @@ mutates files on disk (compact, ingest).
 """
 from __future__ import annotations
 
+import errno
 import os
+import stat
 import tempfile
 import unicodedata
 from pathlib import Path
@@ -15,6 +17,29 @@ class UnsafeTargetError(Exception):
     pass
 
 
+_UNSUPPORTED_DIRECTORY_FSYNC_ERRNOS = frozenset(
+    getattr(errno, name)
+    for name in ("EINVAL", "ENOTSUP", "EOPNOTSUPP")
+    if hasattr(errno, name)
+)
+
+
+def _fsync_directory(path: Path) -> None:
+    """Persist a replaced directory entry on platforms that support it."""
+    if os.name != "posix":
+        return
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    fd = os.open(path, flags)
+    try:
+        try:
+            os.fsync(fd)
+        except OSError as exc:
+            if exc.errno not in _UNSUPPORTED_DIRECTORY_FSYNC_ERRNOS:
+                raise
+    finally:
+        os.close(fd)
+
+
 def atomic_write_text(path: Path, content: str) -> None:
     """Write `content` to `path` atomically via tempfile + os.replace.
 
@@ -22,16 +47,29 @@ def atomic_write_text(path: Path, content: str) -> None:
     so a crash mid-write leaves either the old or the new file, never a
     truncated mix.
     """
+    try:
+        existing_mode = stat.S_IMODE(path.stat().st_mode)
+    except FileNotFoundError:
+        existing_mode = None
+
     fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
+    replaced = False
     try:
         with os.fdopen(fd, "w") as f:
             f.write(content)
+            f.flush()
+            if existing_mode is not None:
+                os.chmod(tmp, existing_mode)
+            os.fsync(f.fileno())
         os.replace(tmp, path)
+        replaced = True
+        _fsync_directory(path.parent)
     except Exception:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
+        if not replaced:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
         raise
 
 
