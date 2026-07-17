@@ -883,11 +883,26 @@ class ApplyTransaction:
 
         def journal_replacement(temporary: Path) -> None:
             try:
-                record.pending_artifact = self._artifact_identity(temporary)
+                pending_artifact = self._artifact_identity(temporary)
             except OSError as exc:
                 raise TransactionRecoveryError(
                     f"cannot record future artifact for {path.name}: {exc}"
                 ) from exc
+            if (
+                record.write_temp_identity is None
+                or (
+                    pending_artifact.device,
+                    pending_artifact.inode,
+                )
+                != (
+                    record.write_temp_identity.device,
+                    record.write_temp_identity.inode,
+                )
+            ):
+                raise TransactionRecoveryError(
+                    f"atomic write temporary for {path.name} changed before publish"
+                )
+            record.pending_artifact = pending_artifact
             self._write_journal()
 
         def publish_replacement(temporary: Path, destination: Path) -> None:

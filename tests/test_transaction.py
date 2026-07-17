@@ -1499,7 +1499,7 @@ def test_before_move_rejects_source_destination_alias_before_journal(
         transaction.commit()
 
     assert source.read_text() == "handoff\n"
-    assert not (handoffs_dir / destination_name).exists()
+    assert sum(entry.is_file() for entry in handoffs_dir.iterdir()) == 1
 
 
 def test_recovery_rolls_back_entire_batch_after_late_move_validation_failure(
@@ -1579,6 +1579,47 @@ def test_write_text_journals_future_identity_before_atomic_replace(
         assert recovered.recovered is True
         assert card.read_text() == "original\n"
         recovered.commit()
+
+
+def test_write_text_rejects_replaced_journaled_temporary(
+    memory_dir, handoffs_dir, monkeypatch
+):
+    from memory_doctor import transaction as transaction_mod
+
+    card = memory_dir / "card.md"
+    card.write_text("original\n", encoding="utf-8")
+    real_atomic_write = transaction_mod.atomic_write_text
+
+    def replace_temporary_before_replacement_journal(path, content, **kwargs):
+        if path != card:
+            return real_atomic_write(path, content, **kwargs)
+        real_before_replace = kwargs["before_replace"]
+
+        def replace_temporary(temporary: Path) -> None:
+            replacement = memory_dir / "unrelated.tmp"
+            replacement.write_text("unrelated\n", encoding="utf-8")
+            replacement.replace(temporary)
+            real_before_replace(temporary)
+
+        kwargs["before_replace"] = replace_temporary
+        return real_atomic_write(path, content, **kwargs)
+
+    monkeypatch.setattr(
+        transaction_mod,
+        "atomic_write_text",
+        replace_temporary_before_replacement_journal,
+    )
+
+    transaction = ApplyTransaction(memory_dir, handoffs_dir)
+    transaction.__enter__()
+    try:
+        with pytest.raises(TransactionRecoveryError, match="temporary.*changed"):
+            transaction.write_text(card, "transaction-created\n")
+        assert transaction._files[card].pending_artifact is None
+    finally:
+        transaction._release_lock()
+
+    assert card.read_text(encoding="utf-8") == "original\n"
 
 
 def test_write_text_crash_before_replace_cleans_journaled_atomic_temp(
@@ -2054,6 +2095,9 @@ def test_after_write_rejects_case_alias_callback(memory_dir, handoffs_dir):
         atomic_write_text(card, "changed\n")
         with pytest.raises(TransactionError, match="without before_write"):
             transaction.after_write(memory_dir / "foo.md")
+        transaction.after_write(card)
+
+    assert card.read_text(encoding="utf-8") == "original\n"
 
 
 def test_journal_rejects_overlapping_move_visible_paths(memory_dir, handoffs_dir):

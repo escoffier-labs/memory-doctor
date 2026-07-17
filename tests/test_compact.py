@@ -18,6 +18,32 @@ def cfg(memory_dir, handoffs_dir, max_lines=10, max_bytes=24000, max_hook_chars=
     )
 
 
+def test_internal_apply_requires_transaction_before_first_write(
+    memory_dir, handoffs_dir
+):
+    from memory_doctor import compact as compact_mod
+    from memory_doctor.transaction import TransactionRecoveryError
+
+    card = write_card(memory_dir, "topic", "original\n")
+    index = write_memory_index(
+        memory_dir,
+        [
+            "# Memory Index",
+            "- [topic](topic.md) - hook",
+            "  detail",
+        ],
+    )
+    originals = (card.read_bytes(), index.read_bytes())
+
+    with pytest.raises(TransactionRecoveryError, match="active transaction"):
+        compact_mod._run(
+            cfg(memory_dir, handoffs_dir, max_lines=2),
+            apply=True,
+        )
+
+    assert (card.read_bytes(), index.read_bytes()) == originals
+
+
 @pytest.mark.parametrize(
     ("file_attributes", "zero_inode"),
     [(0x1, False), (0x400, False), (0, True)],

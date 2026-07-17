@@ -93,6 +93,11 @@ def _process_handoff(
             if existing.strip() == parsed.content.strip():
                 msg = f"{src.name}: create-card -> {target.name} already identical, move to processed"
                 if apply:
+                    if transaction is None or target_identity is None:
+                        raise TransactionRecoveryError(
+                            "identical card apply requires an active transaction"
+                        )
+                    transaction.watch_memory_file(target, target_identity)
                     move_processed()
                 return msg, True
             if not force:
@@ -263,7 +268,10 @@ def _apply_preflight(
     collisions = [
         path.name
         for path in pending
-        if (cfg.handoffs_dir / "processed" / path.name).exists()
+        if (
+            (cfg.handoffs_dir / "processed" / path.name).exists()
+            or (cfg.handoffs_dir / "processed" / path.name).is_symlink()
+        )
     ]
     if collisions:
         print(

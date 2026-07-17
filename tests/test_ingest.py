@@ -816,6 +816,63 @@ def test_ingest_refuses_processed_name_collision_before_write(
     assert "processed" in capsys.readouterr().err
 
 
+def test_ingest_refuses_dangling_processed_name_collision_before_state(
+    memory_dir, handoffs_dir, capsys
+):
+    handoff = write_handoff(
+        handoffs_dir,
+        "dangling-collision.md",
+        action="create-card",
+        target="never-written.md",
+        content="must not write",
+    )
+    collision = handoffs_dir / "processed" / handoff.name
+    collision.symlink_to("missing-handoff.md")
+    before = _parent_snapshot(memory_dir)
+
+    assert run(cfg(memory_dir, handoffs_dir), apply=True) == 2
+
+    assert _parent_snapshot(memory_dir) == before
+    assert handoff.exists()
+    assert collision.is_symlink()
+    assert not (memory_dir / "never-written.md").exists()
+    assert "processed" in capsys.readouterr().err
+
+
+def test_identical_create_tracks_card_until_transaction_commit(
+    memory_dir, handoffs_dir, monkeypatch
+):
+    from memory_doctor import transaction as transaction_mod
+
+    card = memory_dir / "existing.md"
+    card.write_text("same content\n", encoding="utf-8")
+    handoff = write_handoff(
+        handoffs_dir,
+        "identical.md",
+        action="create-card",
+        target=card.name,
+        content="same content",
+    )
+    real_commit = transaction_mod.ApplyTransaction.commit
+
+    def replace_card_before_commit(transaction):
+        replacement = memory_dir / "operator.tmp"
+        replacement.write_text("operator replacement\n", encoding="utf-8")
+        replacement.replace(card)
+        return real_commit(transaction)
+
+    monkeypatch.setattr(
+        transaction_mod.ApplyTransaction,
+        "commit",
+        replace_card_before_commit,
+    )
+
+    assert run(cfg(memory_dir, handoffs_dir), apply=True) == 2
+    assert card.read_text(encoding="utf-8") == "operator replacement\n"
+    assert handoff.exists()
+    assert not (handoffs_dir / "processed" / handoff.name).exists()
+
+
 @pytest.mark.parametrize("error_type", [PermissionError, RuntimeError])
 def test_ingest_transaction_construction_failure_is_handled(
     memory_dir, handoffs_dir, monkeypatch, capsys, error_type

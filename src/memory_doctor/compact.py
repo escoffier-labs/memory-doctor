@@ -735,6 +735,10 @@ def _run(
     if rc != 0:
         return rc
 
+    if transaction is None:
+        raise TransactionRecoveryError(
+            "compact apply requires an active transaction"
+        )
     _apply_flatten(
         cfg.memory_dir,
         plan,
