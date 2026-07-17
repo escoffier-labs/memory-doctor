@@ -15,6 +15,9 @@ on:
       - 'LICENSE'
       - '.gitignore'
 
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -24,6 +27,8 @@ jobs:
         python-version: ["3.10", "3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
@@ -37,3 +42,24 @@ jobs:
         run: python -m pip install -e '.[dev]'
       - name: Test
         run: ./scripts/verify
+
+  windows-transaction:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Configure git identity
+        run: |
+          git config --global user.email "ci@example.com"
+          git config --global user.name "CI"
+      - name: Install
+        run: python -m pip install -e ".[dev]"
+      - name: Test transaction callers
+        run: python -m pytest -q tests/test_transaction.py tests/test_ingest.py tests/test_compact.py

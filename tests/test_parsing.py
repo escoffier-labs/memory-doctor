@@ -159,7 +159,8 @@ def test_parse_handoff_content_limit_counts_utf8_bytes(tmp_path: Path):
     h.write_text(
         "## Recommended memory action\ncreate-card\n\n"
         "## Target card\nfoo.md\n\n"
-        "## Suggested card content\néé"
+        "## Suggested card content\néé",
+        encoding="utf-8",
     )
 
     with pytest.raises(HandoffParseError, match=r"3 byte limit"):

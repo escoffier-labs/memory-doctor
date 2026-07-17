@@ -112,6 +112,8 @@ Sweeps the handoffs dir for unprocessed `*.md` files matching the standard hando
 Successful handoffs are moved into `<handoffs-dir>/processed/`. Dry-run by default; `--apply` writes.
 Parsing is capped at 1 MiB per handoff and 256 KiB for the suggested card content. Oversized handoffs fail before any target card is changed and the error reports the applicable byte limit.
 
+Apply runs are serialized per memory directory. Before the first write or handoff move, memory-doctor records a private recovery journal. A failed write or move restores the original files and inbox state. The next apply also restores an interrupted transaction before doing new work. Existing names under `processed/` are treated as collisions and must be resolved by the operator.
+
 ### `compact`
 
 Reads MEMORY.md, counts lines and bytes. Triggers when MEMORY.md is over the line threshold OR the byte threshold. Two non-lossy passes:
@@ -170,7 +172,7 @@ No `Co-Authored-By` or `Generated with` trailers; subject already identifies the
 
 `--commit` without `--apply` is a no-op and exits 0 (friendly for experimentation).
 
-If git rejects the commit after writes succeed, for example because a hook fails, memory-doctor leaves the touched files staged and exits non-zero. Review the staged diff, fix the hook failure, then commit or unstage manually.
+If git rejects the commit after writes succeed, memory-doctor preserves the completed file and handoff changes and exits non-zero. Hook failures leave the touched files staged. If staging itself failed, review `git status`, add the intended files, and commit them manually.
 
 ## Examples
 

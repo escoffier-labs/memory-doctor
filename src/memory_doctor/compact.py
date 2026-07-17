@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
+import json
 import re
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -12,6 +14,14 @@ from memory_doctor.safety import (
     UnsafeTargetError,
     atomic_write_text,
     resolve_card_target,
+)
+from memory_doctor.transaction import (
+    ApplyTransaction,
+    TransactionRecoveryError,
+    has_pending_transaction_recovery,
+    preflight_managed_artifact,
+    preflight_transaction_capabilities,
+    preflight_visible_path_aliases,
 )
 
 
@@ -85,6 +95,17 @@ def _flatten_marker(today: str, flatten: "Flatten") -> str:
     two entries with the same title but different detail don't collide and
     silently swallow each other's content.
     """
+    payload = json.dumps([
+        flatten.target_name,
+        flatten.title,
+        flatten.bullet_text.strip(),
+        "\n".join(flatten.detail_lines),
+    ], ensure_ascii=False, separators=(",", ":"))
+    h = hashlib.sha256(payload.encode()).hexdigest()[:12]
+    return f"<!-- compact:{today}:{h} -->"
+
+
+def _legacy_flatten_marker(today: str, flatten: "Flatten") -> str:
     payload = "|".join([
         flatten.target_name,
         flatten.title,
@@ -102,6 +123,16 @@ def _tighten_marker(today: str, tighten: "Tighten") -> str:
     title but differ in hook text don't collide. Uses a distinct `tighten:`
     prefix so it never aliases a flatten marker.
     """
+    payload = json.dumps([
+        tighten.target_name,
+        tighten.title,
+        tighten.full_hook.strip(),
+    ], ensure_ascii=False, separators=(",", ":"))
+    h = hashlib.sha256(payload.encode()).hexdigest()[:12]
+    return f"<!-- compact:tighten:{today}:{h} -->"
+
+
+def _legacy_tighten_marker(today: str, tighten: "Tighten") -> str:
     payload = "|".join([
         tighten.target_name,
         tighten.title,
@@ -109,6 +140,28 @@ def _tighten_marker(today: str, tighten: "Tighten") -> str:
     ])
     h = hashlib.sha256(payload.encode()).hexdigest()[:12]
     return f"<!-- compact:tighten:{today}:{h} -->"
+
+
+def _flatten_preserved_block(
+    today: str, flatten: "Flatten", *, marker: str | None = None
+) -> str:
+    return (
+        f"{marker or _flatten_marker(today, flatten)}\n"
+        f"## From index ({today})\n\n"
+        f"{flatten.bullet_text.strip()}\n\n"
+        + "\n".join(flatten.detail_lines)
+        + "\n"
+    )
+
+
+def _tighten_preserved_block(
+    today: str, tighten: "Tighten", *, marker: str | None = None
+) -> str:
+    return (
+        f"{marker or _tighten_marker(today, tighten)}\n"
+        f"## From index ({today})\n\n"
+        f"{tighten.full_hook.strip()}\n"
+    )
 
 
 @dataclass(frozen=True)
@@ -139,6 +192,7 @@ class CompactionPlan:
     projected_bytes: int = 0
     original_bytes: int = 0
     unsafe_targets: list[str] = field(default_factory=list)
+    target_identities: dict[str, object] = field(default_factory=dict)
 
 
 def _truncate_hook(hook: str, max_hook_chars: int) -> str:
@@ -163,6 +217,7 @@ def plan_compaction(
     max_lines: int,
     *,
     max_hook_chars: int = 140,
+    transaction: ApplyTransaction | None = None,
 ) -> CompactionPlan:
     index_path = memory_dir / "MEMORY.md"
     raw = index_path.read_bytes() if index_path.exists() else b""
@@ -174,6 +229,22 @@ def plan_compaction(
     tightens: list[Tighten] = []
     missing: list[str] = []
     unsafe: list[str] = []
+    target_identities: dict[str, object] = {}
+
+    def record_target_identity(target_name: str, target_path: Path) -> bool:
+        if transaction is None:
+            return target_path.exists()
+        identity = transaction.memory_file_identity(target_path)
+        if identity is None:
+            return False
+        previous = target_identities.get(target_name)
+        if previous is not None and previous != identity:
+            raise TransactionRecoveryError(
+                f"memory file {target_name} changed while compaction was planned"
+            )
+        target_identities[target_name] = identity
+        return True
+
     i = 0
     while i < len(lines):
         line = lines[i]
@@ -194,7 +265,7 @@ def plan_compaction(
             # Reject targets that would escape memory_dir or are otherwise unsafe;
             # exclude them from the flatten plan entirely so we never write outside.
             try:
-                resolve_card_target(memory_dir, target_name)
+                resolve_card_target(memory_dir, target_url)
             except UnsafeTargetError:
                 unsafe.append(target_name)
                 i = j
@@ -206,7 +277,7 @@ def plan_compaction(
                 bullet_text=bullet_text,
                 detail_lines=details,
             ))
-            if not (memory_dir / target_name).exists():
+            if not record_target_identity(target_name, memory_dir / target_name):
                 missing.append(target_name)
             i = j
             continue
@@ -216,12 +287,12 @@ def plan_compaction(
         hook = bullet_text.strip()
         if len(_normalize_unicode(hook)) > max_hook_chars:
             try:
-                resolved = resolve_card_target(memory_dir, target_name)
+                resolved = resolve_card_target(memory_dir, target_url)
             except UnsafeTargetError:
                 unsafe.append(target_name)
                 i = j
                 continue
-            if resolved.exists():
+            if record_target_identity(target_name, resolved):
                 normalized = _normalize_unicode(hook)
                 tightens.append(Tighten(
                     line_index=i,
@@ -243,6 +314,7 @@ def plan_compaction(
         projected_bytes=projected_bytes,
         original_bytes=len(raw),
         unsafe_targets=unsafe,
+        target_identities=target_identities,
     )
 
 
@@ -288,10 +360,32 @@ def _projected_index_bytes(
     return len(text.encode("utf-8"))
 
 
-def _apply_flatten(memory_dir: Path, plan: CompactionPlan) -> None:
+def _apply_flatten(
+    memory_dir: Path,
+    plan: CompactionPlan,
+    transaction: ApplyTransaction | None = None,
+    index_identity=None,
+) -> None:
     index_path = memory_dir / "MEMORY.md"
+    if transaction and index_identity is None:
+        index_identity = transaction.memory_file_identity(index_path)
     lines = index_path.read_bytes().decode("utf-8").splitlines()
+    if transaction and transaction.memory_file_identity(index_path) != index_identity:
+        raise TransactionRecoveryError(
+            "memory index changed while the compaction plan was read"
+        )
     today = dt.date.today().isoformat()
+    current_target_identities = dict(plan.target_identities)
+
+    def write_target(path: Path, content: str, expected_identity=None) -> None:
+        if transaction:
+            transaction.write_text(
+                path,
+                content,
+                expected_identity=expected_identity,
+            )
+        else:
+            atomic_write_text(path, content)
 
     applied: list[Flatten] = []
     for flatten in plan.flattens:
@@ -301,21 +395,56 @@ def _apply_flatten(memory_dir: Path, plan: CompactionPlan) -> None:
             target_path = resolve_card_target(memory_dir, flatten.target_name)
         except UnsafeTargetError:
             continue
+        target_identity = current_target_identities.get(flatten.target_name)
+        if transaction and target_identity is None:
+            target_identity = transaction.memory_file_identity(target_path)
+            current_target_identities[flatten.target_name] = target_identity
+        if (
+            transaction
+            and transaction.memory_file_identity(target_path) != target_identity
+        ):
+            raise TransactionRecoveryError(
+                f"memory file {target_path.name} changed after compaction was planned"
+            )
         existing = target_path.read_text(encoding="utf-8")
+        if (
+            transaction
+            and transaction.memory_file_identity(target_path) != target_identity
+        ):
+            raise TransactionRecoveryError(
+                f"memory file {target_path.name} changed while it was read"
+            )
         marker = _flatten_marker(today, flatten)
         if marker in existing:
+            if _flatten_preserved_block(today, flatten) not in existing:
+                raise TransactionRecoveryError(
+                    f"memory file {target_path.name} contains compact marker "
+                    "without its preserved payload"
+                )
             # Already applied for this title/date - skip the topic append but
             # still drop the detail lines from the index below for consistency.
             applied.append(flatten)
             continue
+        legacy_marker = _legacy_flatten_marker(today, flatten)
+        if legacy_marker in existing:
+            if _flatten_preserved_block(
+                today,
+                flatten,
+                marker=legacy_marker,
+            ) not in existing:
+                raise TransactionRecoveryError(
+                    f"memory file {target_path.name} contains legacy compact "
+                    "marker without its preserved payload"
+                )
+            applied.append(flatten)
+            continue
         sep = "" if existing.endswith("\n\n") else ("\n" if existing.endswith("\n") else "\n\n")
-        appended = (
-            f"{existing}{sep}{marker}\n## From index ({today})\n\n"
-            f"{flatten.bullet_text.strip()}\n\n"
-            + "\n".join(flatten.detail_lines)
-            + "\n"
-        )
-        atomic_write_text(target_path, appended)
+        appended = f"{existing}{sep}{_flatten_preserved_block(today, flatten)}"
+        write_target(target_path, appended, target_identity)
+        if transaction:
+            current_target_identities[flatten.target_name] = (
+                transaction.memory_file_identity(target_path)
+            )
         applied.append(flatten)
 
     applied_tightens: list[Tighten] = []
@@ -330,37 +459,183 @@ def _apply_flatten(memory_dir: Path, plan: CompactionPlan) -> None:
             # Dangling link: index may be the only record. Do not move; the
             # whole-file normalization pass below still scrubs unicode in place.
             continue
-        existing = target_path.read_text(encoding="utf-8")
-        marker = _tighten_marker(today, tighten)
-        if marker not in existing:
-            sep = "" if existing.endswith("\n\n") else ("\n" if existing.endswith("\n") else "\n\n")
-            appended = (
-                f"{existing}{sep}{marker}\n## From index ({today})\n\n"
-                f"{tighten.full_hook.strip()}\n"
+        target_identity = current_target_identities.get(tighten.target_name)
+        if transaction and target_identity is None:
+            target_identity = transaction.memory_file_identity(target_path)
+            current_target_identities[tighten.target_name] = target_identity
+        if (
+            transaction
+            and transaction.memory_file_identity(target_path) != target_identity
+        ):
+            raise TransactionRecoveryError(
+                f"memory file {target_path.name} changed after compaction was planned"
             )
-            atomic_write_text(target_path, appended)
+        existing = target_path.read_text(encoding="utf-8")
+        if (
+            transaction
+            and transaction.memory_file_identity(target_path) != target_identity
+        ):
+            raise TransactionRecoveryError(
+                f"memory file {target_path.name} changed while it was read"
+            )
+        marker = _tighten_marker(today, tighten)
+        if marker in existing:
+            if _tighten_preserved_block(today, tighten) not in existing:
+                raise TransactionRecoveryError(
+                    f"memory file {target_path.name} contains compact marker "
+                    "without its preserved payload"
+                )
+        else:
+            legacy_marker = _legacy_tighten_marker(today, tighten)
+            if legacy_marker in existing:
+                if _tighten_preserved_block(
+                    today,
+                    tighten,
+                    marker=legacy_marker,
+                ) not in existing:
+                    raise TransactionRecoveryError(
+                        f"memory file {target_path.name} contains legacy compact "
+                        "marker without its preserved payload"
+                    )
+            else:
+                sep = "" if existing.endswith("\n\n") else ("\n" if existing.endswith("\n") else "\n\n")
+                appended = f"{existing}{sep}{_tighten_preserved_block(today, tighten)}"
+                write_target(target_path, appended, target_identity)
+                if transaction:
+                    current_target_identities[tighten.target_name] = (
+                        transaction.memory_file_identity(target_path)
+                    )
         applied_tightens.append(tighten)
 
+    if transaction:
+        for target_name, expected_identity in current_target_identities.items():
+            target_path = resolve_card_target(memory_dir, target_name)
+            if transaction.memory_file_identity(target_path) != expected_identity:
+                raise TransactionRecoveryError(
+                    f"memory file {target_path.name} changed before the index rewrite"
+                )
+            transaction.watch_memory_file(target_path, expected_identity)
+
     rewritten = _rewrite_index_lines(lines, applied, applied_tightens, 0)
-    atomic_write_text(index_path, "\n".join(rewritten) + ("\n" if rewritten else ""))
+    write_target(
+        index_path,
+        "\n".join(rewritten) + ("\n" if rewritten else ""),
+        index_identity,
+    )
 
 
-def run(
+def _apply_preflight(
     cfg: PathConfig,
+    plan: CompactionPlan,
+    index_path: Path,
     *,
-    apply: bool = False,
-    commit: bool = False,
-    commit_author: str | None = None,
+    commit: bool,
+    commit_author: str | None,
 ) -> int:
-    import sys
+    """Validate an apply without creating transaction state or writing files."""
     from memory_doctor.git import (
         GitStatusError,
-        commit_run,
         files_have_uncommitted_changes,
         is_git_repo,
         validate_author_format,
         working_tree_sane,
     )
+
+    card_targets = [cfg.memory_dir / item.target_name for item in plan.flattens]
+    card_targets += [cfg.memory_dir / item.target_name for item in plan.tightens]
+    try:
+        preflight_managed_artifact(index_path, label="memory index", required=True)
+        for path in card_targets:
+            preflight_managed_artifact(path, label="compact target")
+        preflight_visible_path_aliases(
+            [index_path, *card_targets], label="compact target"
+        )
+    except TransactionRecoveryError as exc:
+        print(
+            f"memory-doctor compact: refusing unsafe transaction artifact: {exc}",
+            file=sys.stderr,
+        )
+        return 2
+
+    if commit:
+        author_error = validate_author_format(commit_author)
+        if author_error:
+            print(
+                f"memory-doctor: invalid --commit-author: {author_error}\n"
+                f"  fix: use `--commit-author \"Name <email>\"`",
+                file=sys.stderr,
+            )
+            return 2
+        if not is_git_repo(cfg.memory_dir):
+            print(
+                f"memory-doctor: --commit requires the memory dir to be a git repo\n"
+                f"  memory dir: {cfg.memory_dir}\n"
+                f"  fix: run `memory-doctor init-git` once, then retry",
+                file=sys.stderr,
+            )
+            return 2
+        ok, reason = working_tree_sane(cfg.memory_dir)
+        if not ok:
+            print(
+                f"memory-doctor: refusing to commit, git is in the middle of a {reason}\n"
+                f"  fix: complete or abort the in-progress operation, then retry",
+                file=sys.stderr,
+            )
+            return 2
+
+    if is_git_repo(cfg.memory_dir):
+        planned = card_targets + [index_path]
+        action = "commit" if commit else "apply"
+        try:
+            dirty = files_have_uncommitted_changes(cfg.memory_dir, planned)
+        except GitStatusError as exc:
+            print(
+                f"memory-doctor: refusing to {action}, git status failed:\n  {exc}",
+                file=sys.stderr,
+            )
+            return 2
+        if dirty:
+            print(
+                f"memory-doctor: refusing to {action}, target files have uncommitted local changes:",
+                file=sys.stderr,
+            )
+            for path, status in dirty:
+                print(f"  - {path.name} ({status})", file=sys.stderr)
+            print(
+                "  fix: review with `git diff`, commit/stash/discard, then retry",
+                file=sys.stderr,
+            )
+            return 2
+
+    for name in sorted(
+        {item.target_name for item in plan.flattens}
+        | {item.target_name for item in plan.tightens}
+    ):
+        card_path = cfg.memory_dir / name
+        if not card_path.exists():
+            continue
+        try:
+            card_path.read_bytes().decode("utf-8")
+        except UnicodeDecodeError as exc:
+            print(
+                f"memory-doctor compact: {card_path} is not valid UTF-8 "
+                f"(bad byte at offset {exc.start}); refusing to touch it\n"
+                f"  fix: repair the file's encoding manually, then retry",
+                file=sys.stderr,
+            )
+            return 2
+    return 0
+
+
+def _run(
+    cfg: PathConfig,
+    *,
+    apply: bool = False,
+    commit: bool = False,
+    commit_author: str | None = None,
+    transaction: ApplyTransaction | None = None,
+) -> int:
+    from memory_doctor.git import commit_run
 
     if commit and not apply:
         print("memory-doctor compact: skipping commit (dry-run; use --apply)")
@@ -370,8 +645,16 @@ def run(
         print(f"memory-doctor compact: {index_path} does not exist")
         return 0
 
+    index_identity = (
+        transaction.memory_file_identity(index_path) if transaction else None
+    )
     try:
-        plan = plan_compaction(cfg.memory_dir, cfg.max_lines, max_hook_chars=cfg.max_hook_chars)
+        plan = plan_compaction(
+            cfg.memory_dir,
+            cfg.max_lines,
+            max_hook_chars=cfg.max_hook_chars,
+            transaction=transaction,
+        )
     except UnicodeDecodeError as e:
         print(
             f"memory-doctor compact: {index_path} is not valid UTF-8 "
@@ -382,6 +665,10 @@ def run(
         return 2
 
     index_text = index_path.read_bytes().decode("utf-8")
+    if transaction and transaction.memory_file_identity(index_path) != index_identity:
+        raise TransactionRecoveryError(
+            "memory index changed while the compaction plan was read"
+        )
     has_unicode = _index_has_normalizable(index_text)
     over_lines = plan.original_lines > cfg.max_lines
     over_bytes = plan.original_bytes > cfg.max_bytes
@@ -442,80 +729,28 @@ def run(
     if not apply:
         return 0
 
-    if commit:
-        author_error = validate_author_format(commit_author)
-        if author_error:
-            print(
-                f"memory-doctor: invalid --commit-author: {author_error}\n"
-                f"  fix: use `--commit-author \"Name <email>\"`",
-                file=sys.stderr,
-            )
-            return 2
-        if not is_git_repo(cfg.memory_dir):
-            print(
-                f"memory-doctor: --commit requires the memory dir to be a git repo\n"
-                f"  memory dir: {cfg.memory_dir}\n"
-                f"  fix: run `memory-doctor init-git` once, then retry",
-                file=sys.stderr,
-            )
-            return 2
-        ok, reason = working_tree_sane(cfg.memory_dir)
-        if not ok:
-            print(
-                f"memory-doctor: refusing to commit, git is in the middle of a {reason}\n"
-                f"  fix: complete or abort the in-progress operation, then retry",
-                file=sys.stderr,
-            )
-            return 2
+    rc = _apply_preflight(
+        cfg,
+        plan,
+        index_path,
+        commit=commit,
+        commit_author=commit_author,
+    )
+    if rc != 0:
+        return rc
 
-    # Dirty-tree pre-flight runs for EVERY apply in a git-managed memory dir,
-    # not just --commit: applying over uncommitted edits would bury them in
-    # the rewrite with no committed baseline to diff or revert against.
-    if is_git_repo(cfg.memory_dir):
-        card_targets = [cfg.memory_dir / f.target_name for f in plan.flattens] + [
-            cfg.memory_dir / t.target_name for t in plan.tightens
-        ]
-        planned = card_targets + [index_path]
-        action = "commit" if commit else "apply"
-        try:
-            dirty = files_have_uncommitted_changes(cfg.memory_dir, planned)
-        except GitStatusError as exc:
-            print(
-                f"memory-doctor: refusing to {action}, git status failed:\n  {exc}",
-                file=sys.stderr,
-            )
-            return 2
-        if dirty:
-            print(
-                f"memory-doctor: refusing to {action}, target files have uncommitted local changes:",
-                file=sys.stderr,
-            )
-            for path, status in dirty:
-                print(f"  - {path.name} ({status})", file=sys.stderr)
-            print("  fix: review with `git diff`, commit/stash/discard, then retry", file=sys.stderr)
-            return 2
-
-    # Pre-flight failures must abort before any write: validate every target
-    # card we are about to append to is readable as UTF-8 up front, instead of
-    # crashing mid-apply with some cards already rewritten.
-    for name in sorted(
-        {f.target_name for f in plan.flattens} | {t.target_name for t in plan.tightens}
-    ):
-        card_path = cfg.memory_dir / name
-        if not card_path.exists():
-            continue
-        try:
-            card_path.read_bytes().decode("utf-8")
-        except UnicodeDecodeError as e:
-            print(
-                f"memory-doctor compact: {card_path} is not valid UTF-8 "
-                f"(bad byte at offset {e.start}); refusing to touch it\n"
-                f"  fix: repair the file's encoding manually, then retry",
-                file=sys.stderr,
-            )
-            return 2
-
-    _apply_flatten(cfg.memory_dir, plan)
+    if transaction is None:
+        raise TransactionRecoveryError(
+            "compact apply requires an active transaction"
+        )
+    _apply_flatten(
+        cfg.memory_dir,
+        plan,
+        transaction,
+        index_identity=index_identity,
+    )
+    if transaction:
+        transaction.commit()
     print(
         f"\nApplied. MEMORY.md now {plan.projected_lines} lines, "
         f"~{plan.projected_bytes} bytes."
@@ -571,5 +806,181 @@ def run(
         print(f"  files: {', '.join(f.name for f in files)}", file=sys.stderr)
         print(f"  details: {result.error_message}", file=sys.stderr)
         return 1
-    print(f"\nerror: commit failed ({result.error_kind}): {result.error_message}", file=sys.stderr)
+    print(
+        f"\nerror: commit failed ({result.error_kind}): {result.error_message}\n"
+        "  file changes are preserved; review `git status` and commit them manually",
+        file=sys.stderr,
+    )
     return 1
+
+
+def run(
+    cfg: PathConfig,
+    *,
+    apply: bool = False,
+    commit: bool = False,
+    commit_author: str | None = None,
+) -> int:
+    if not apply:
+        return _run(
+            cfg,
+            apply=False,
+            commit=commit,
+            commit_author=commit_author,
+        )
+
+    try:
+        recovery_pending = has_pending_transaction_recovery(cfg.memory_dir)
+    except TransactionRecoveryError as exc:
+        print(
+            f"memory-doctor compact: transaction recovery incomplete: {exc}",
+            file=sys.stderr,
+        )
+        return 2
+
+    index_path = cfg.memory_dir / "MEMORY.md"
+    if not recovery_pending and not index_path.exists():
+        try:
+            recovery_pending = has_pending_transaction_recovery(cfg.memory_dir)
+        except TransactionRecoveryError as exc:
+            print(
+                f"memory-doctor compact: transaction recovery incomplete: {exc}",
+                file=sys.stderr,
+            )
+            return 2
+        if not recovery_pending:
+            return _run(
+                cfg,
+                apply=False,
+                commit=False,
+                commit_author=commit_author,
+            )
+    if not recovery_pending:
+        try:
+            preflight_managed_artifact(
+                index_path, label="memory index", required=True
+            )
+        except TransactionRecoveryError as exc:
+            print(
+                f"memory-doctor compact: refusing unsafe transaction artifact: {exc}",
+                file=sys.stderr,
+            )
+            return 2
+    if not recovery_pending:
+        try:
+            plan = plan_compaction(
+                cfg.memory_dir,
+                cfg.max_lines,
+                max_hook_chars=cfg.max_hook_chars,
+            )
+            index_text = index_path.read_bytes().decode("utf-8")
+        except UnicodeDecodeError:
+            try:
+                recovery_pending = has_pending_transaction_recovery(cfg.memory_dir)
+            except TransactionRecoveryError as exc:
+                print(
+                    f"memory-doctor compact: transaction recovery incomplete: {exc}",
+                    file=sys.stderr,
+                )
+                return 2
+            if not recovery_pending:
+                return _run(
+                    cfg,
+                    apply=False,
+                    commit=False,
+                    commit_author=commit_author,
+                )
+    if not recovery_pending:
+        has_action = (
+            plan.original_lines > cfg.max_lines
+            or plan.original_bytes > cfg.max_bytes
+            or bool(plan.flattens)
+            or bool(plan.tightens)
+            or _index_has_normalizable(index_text)
+        )
+        if not has_action or plan.missing_targets:
+            try:
+                recovery_pending = has_pending_transaction_recovery(cfg.memory_dir)
+            except TransactionRecoveryError as exc:
+                print(
+                    f"memory-doctor compact: transaction recovery incomplete: {exc}",
+                    file=sys.stderr,
+                )
+                return 2
+            if not recovery_pending:
+                return _run(
+                    cfg,
+                    apply=False,
+                    commit=False,
+                    commit_author=commit_author,
+                )
+    if not recovery_pending:
+        rc = _apply_preflight(
+            cfg,
+            plan,
+            index_path,
+            commit=commit,
+            commit_author=commit_author,
+        )
+        if rc != 0:
+            return rc
+
+    try:
+        preflight_transaction_capabilities(cfg.memory_dir)
+        transaction = ApplyTransaction(cfg.memory_dir)
+    except (OSError, RuntimeError, TransactionRecoveryError) as exc:
+        print(
+            f"memory-doctor compact: transaction recovery incomplete: {exc}",
+            file=sys.stderr,
+        )
+        return 2
+
+    entered = False
+    try:
+        with transaction:
+            entered = True
+            transaction.preflight_mutations()
+            if transaction.recovered:
+                print(
+                    "memory-doctor compact: recovered an interrupted apply transaction",
+                    file=sys.stderr,
+                )
+            return _run(
+                cfg,
+                apply=True,
+                commit=commit,
+                commit_author=commit_author,
+                transaction=transaction,
+            )
+    except TransactionRecoveryError as exc:
+        print(
+            f"memory-doctor compact: transaction recovery incomplete: {exc}",
+            file=sys.stderr,
+        )
+        return 2
+    except OSError as exc:
+        if not entered:
+            print(
+                f"memory-doctor compact: transaction recovery incomplete: {exc}",
+                file=sys.stderr,
+            )
+            return 2
+        outcome = "changes preserved" if transaction.committed else "changes rolled back"
+        print(
+            f"memory-doctor compact: apply failed ({outcome}): {exc}",
+            file=sys.stderr,
+        )
+        return 1
+    except Exception as exc:
+        if not entered:
+            print(
+                f"memory-doctor compact: transaction recovery incomplete: {exc}",
+                file=sys.stderr,
+            )
+            return 2
+        outcome = "changes preserved" if transaction.committed else "changes rolled back"
+        print(
+            f"memory-doctor compact: apply failed ({outcome}): {exc}",
+            file=sys.stderr,
+        )
+        return 1

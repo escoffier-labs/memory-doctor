@@ -1,4 +1,7 @@
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 from tests.conftest import write_card, write_memory_index
 from memory_doctor.paths import PathConfig
@@ -15,12 +18,123 @@ def cfg(memory_dir, handoffs_dir, max_lines=10, max_bytes=24000, max_hook_chars=
     )
 
 
+def test_internal_apply_requires_transaction_before_first_write(
+    memory_dir, handoffs_dir
+):
+    from memory_doctor import compact as compact_mod
+    from memory_doctor.transaction import TransactionRecoveryError
+
+    card = write_card(memory_dir, "topic", "original\n")
+    index = write_memory_index(
+        memory_dir,
+        [
+            "# Memory Index",
+            "- [topic](topic.md) - hook",
+            "  detail",
+        ],
+    )
+    originals = (card.read_bytes(), index.read_bytes())
+
+    with pytest.raises(TransactionRecoveryError, match="active transaction"):
+        compact_mod._run(
+            cfg(memory_dir, handoffs_dir, max_lines=2),
+            apply=True,
+        )
+
+    assert (card.read_bytes(), index.read_bytes()) == originals
+
+
+@pytest.mark.parametrize(
+    ("file_attributes", "zero_inode"),
+    [(0x1, False), (0x400, False), (0, True)],
+)
+def test_apply_preflights_all_targets_before_first_compact_write(
+    memory_dir, handoffs_dir, monkeypatch, file_attributes, zero_inode
+):
+    from memory_doctor import transaction as transaction_mod
+
+    first = write_card(memory_dir, "first", "first original\n")
+    second = write_card(memory_dir, "second", "second original\n")
+    index = write_memory_index(
+        memory_dir,
+        [
+            "# Memory Index",
+            "- [first](first.md) - first hook",
+            "  first detail",
+            "- [second](second.md) - second hook",
+            "  second detail",
+        ],
+    )
+    originals = (first.read_bytes(), second.read_bytes(), index.read_bytes())
+    parent_before = {path.name for path in memory_dir.parent.iterdir()}
+    real_lstat = Path.lstat
+
+    def mark_second_unsafe(path: Path):
+        result = real_lstat(path)
+        if path == second:
+            return SimpleNamespace(
+                st_mode=result.st_mode,
+                st_dev=result.st_dev,
+                st_ino=0 if zero_inode else result.st_ino,
+                st_size=result.st_size,
+                st_mtime_ns=result.st_mtime_ns,
+                st_file_attributes=file_attributes,
+                st_reparse_tag=1 if file_attributes == 0x400 else 0,
+            )
+        return result
+
+    monkeypatch.setattr(transaction_mod.os, "name", "nt")
+    monkeypatch.setattr(Path, "lstat", mark_second_unsafe)
+
+    code = run(cfg(memory_dir, handoffs_dir, max_lines=2), apply=True)
+
+    assert code == 2
+    assert (first.read_bytes(), second.read_bytes(), index.read_bytes()) == originals
+    assert {path.name for path in memory_dir.parent.iterdir()} == parent_before
+
+
+@pytest.mark.parametrize(
+    ("first_name", "alias_name"),
+    [
+        ("Foo.md", "foo.md"),
+        ("caf\N{LATIN SMALL LETTER E WITH ACUTE}.md", "cafe\N{COMBINING ACUTE ACCENT}.md"),
+    ],
+)
+def test_apply_rejects_normalized_compact_target_aliases_before_write_or_state(
+    memory_dir, handoffs_dir, capsys, first_name, alias_name
+):
+    first = memory_dir / first_name
+    alias = memory_dir / alias_name
+    first.write_text("first original\n")
+    alias.write_text("alias original\n")
+    index = write_memory_index(
+        memory_dir,
+        [
+            "# Memory Index",
+            f"- [first]({first_name}) - first hook",
+            "  first detail",
+            f"- [alias]({alias_name}) - alias hook",
+            "  alias detail",
+        ],
+    )
+    originals = (first.read_bytes(), alias.read_bytes(), index.read_bytes())
+    parent_before = {path.name for path in memory_dir.parent.iterdir()}
+
+    assert run(cfg(memory_dir, handoffs_dir, max_lines=2), apply=True) == 2
+
+    assert "may alias one filesystem entry" in capsys.readouterr().err
+    assert (first.read_bytes(), alias.read_bytes(), index.read_bytes()) == originals
+    assert {path.name for path in memory_dir.parent.iterdir()} == parent_before
+
+
 def test_under_threshold_no_op(memory_dir, handoffs_dir, capsys):
     write_memory_index(memory_dir, [f"- entry {i}" for i in range(5)])
+    parent_before = {path.name for path in memory_dir.parent.iterdir()}
     code = run(cfg(memory_dir, handoffs_dir, max_lines=180), apply=True)
     assert code == 0
     out = capsys.readouterr().out
     assert "no action" in out.lower() or "under threshold" in out.lower()
+    assert {path.name for path in memory_dir.parent.iterdir()} == parent_before
 
 
 def test_plan_identifies_multiline_entries(memory_dir):
@@ -112,6 +226,172 @@ def test_apply_is_idempotent_via_marker(memory_dir, handoffs_dir):
     assert after_second.count("## From index") == 1
 
 
+def test_apply_refuses_flatten_marker_without_preserved_payload(
+    memory_dir, handoffs_dir
+):
+    from memory_doctor import compact as compact_mod
+
+    card = write_card(memory_dir, "topic-marker-only", "original body\n")
+    index = write_memory_index(
+        memory_dir,
+        [
+            "- [topic-marker-only](topic-marker-only.md) - first line",
+            "  detail that must remain represented",
+        ],
+    )
+    plan = plan_compaction(memory_dir, max_lines=1)
+    marker = compact_mod._flatten_marker(
+        compact_mod.dt.date.today().isoformat(),
+        plan.flattens[0],
+    )
+    card.write_text(f"original body\n\n{marker}\n")
+    original_card = card.read_bytes()
+    original_index = index.read_bytes()
+
+    assert run(cfg(memory_dir, handoffs_dir, max_lines=1), apply=True) == 2
+    assert card.read_bytes() == original_card
+    assert index.read_bytes() == original_index
+
+
+def test_apply_refuses_tighten_marker_without_preserved_payload(
+    memory_dir, handoffs_dir
+):
+    from memory_doctor import compact as compact_mod
+
+    full_hook = "long hook " * 20
+    card = write_card(memory_dir, "topic-tighten-marker", "original body\n")
+    index = write_memory_index(
+        memory_dir,
+        [f"- [topic-tighten-marker](topic-tighten-marker.md) {full_hook}"],
+    )
+    plan = plan_compaction(memory_dir, max_lines=10, max_hook_chars=40)
+    marker = compact_mod._tighten_marker(
+        compact_mod.dt.date.today().isoformat(),
+        plan.tightens[0],
+    )
+    card.write_text(f"original body\n\n{marker}\n")
+    original_card = card.read_bytes()
+    original_index = index.read_bytes()
+
+    assert run(
+        cfg(memory_dir, handoffs_dir, max_lines=10, max_hook_chars=40),
+        apply=True,
+    ) == 2
+    assert card.read_bytes() == original_card
+    assert index.read_bytes() == original_index
+
+
+def test_apply_recognizes_complete_legacy_flatten_block(
+    memory_dir, handoffs_dir
+):
+    from memory_doctor import compact as compact_mod
+
+    card = write_card(memory_dir, "topic-legacy-flatten", "original body\n")
+    index = write_memory_index(
+        memory_dir,
+        [
+            "- [topic-legacy-flatten](topic-legacy-flatten.md) first line",
+            "  legacy detail",
+        ],
+    )
+    plan = plan_compaction(memory_dir, max_lines=1)
+    today = compact_mod.dt.date.today().isoformat()
+    legacy_marker = compact_mod._legacy_flatten_marker(today, plan.flattens[0])
+    legacy_block = compact_mod._flatten_preserved_block(
+        today,
+        plan.flattens[0],
+        marker=legacy_marker,
+    )
+    card.write_text(f"original body\n\n{legacy_block}")
+
+    assert run(cfg(memory_dir, handoffs_dir, max_lines=1), apply=True) == 0
+    assert card.read_text().count("<!-- compact:") == 1
+    assert "legacy detail" not in index.read_text()
+
+
+def test_apply_recognizes_complete_legacy_tighten_block(
+    memory_dir, handoffs_dir
+):
+    from memory_doctor import compact as compact_mod
+
+    full_hook = "legacy long hook " * 12
+    card = write_card(memory_dir, "topic-legacy-tighten", "original body\n")
+    index = write_memory_index(
+        memory_dir,
+        [f"- [topic-legacy-tighten](topic-legacy-tighten.md) {full_hook}"],
+    )
+    plan = plan_compaction(memory_dir, max_lines=10, max_hook_chars=40)
+    today = compact_mod.dt.date.today().isoformat()
+    legacy_marker = compact_mod._legacy_tighten_marker(today, plan.tightens[0])
+    legacy_block = compact_mod._tighten_preserved_block(
+        today,
+        plan.tightens[0],
+        marker=legacy_marker,
+    )
+    card.write_text(f"original body\n\n{legacy_block}")
+
+    assert run(
+        cfg(memory_dir, handoffs_dir, max_lines=10, max_hook_chars=40),
+        apply=True,
+    ) == 0
+    assert card.read_text().count("<!-- compact:tighten:") == 1
+    assert full_hook.strip() not in index.read_text()
+
+
+def test_apply_refuses_legacy_flatten_marker_without_preserved_payload(
+    memory_dir, handoffs_dir
+):
+    from memory_doctor import compact as compact_mod
+
+    card = write_card(memory_dir, "topic-legacy-partial", "original body\n")
+    index = write_memory_index(
+        memory_dir,
+        [
+            "- [topic-legacy-partial](topic-legacy-partial.md) first line",
+            "  legacy detail",
+        ],
+    )
+    plan = plan_compaction(memory_dir, max_lines=1)
+    today = compact_mod.dt.date.today().isoformat()
+    marker = compact_mod._legacy_flatten_marker(today, plan.flattens[0])
+    card.write_text(f"original body\n\n{marker}\n")
+    original_card = card.read_bytes()
+    original_index = index.read_bytes()
+
+    assert run(cfg(memory_dir, handoffs_dir, max_lines=1), apply=True) == 2
+    assert card.read_bytes() == original_card
+    assert index.read_bytes() == original_index
+
+
+def test_apply_refuses_legacy_tighten_marker_without_preserved_payload(
+    memory_dir, handoffs_dir
+):
+    from memory_doctor import compact as compact_mod
+
+    full_hook = "legacy partial hook " * 12
+    card = write_card(memory_dir, "topic-legacy-partial-tighten", "original body\n")
+    index = write_memory_index(
+        memory_dir,
+        [
+            "- [topic-legacy-partial-tighten]"
+            f"(topic-legacy-partial-tighten.md) {full_hook}"
+        ],
+    )
+    plan = plan_compaction(memory_dir, max_lines=10, max_hook_chars=40)
+    today = compact_mod.dt.date.today().isoformat()
+    marker = compact_mod._legacy_tighten_marker(today, plan.tightens[0])
+    card.write_text(f"original body\n\n{marker}\n")
+    original_card = card.read_bytes()
+    original_index = index.read_bytes()
+
+    assert run(
+        cfg(memory_dir, handoffs_dir, max_lines=10, max_hook_chars=40),
+        apply=True,
+    ) == 2
+    assert card.read_bytes() == original_card
+    assert index.read_bytes() == original_index
+
+
 def test_compact_skips_unsafe_target(memory_dir, handoffs_dir, tmp_path, capsys):
     # MEMORY.md references a path-traversal target. Plan must skip it AND
     # apply must never write outside memory_dir.
@@ -159,6 +439,55 @@ def test_same_title_different_detail_produces_distinct_markers(memory_dir, hando
     index = (memory_dir / "MEMORY.md").read_text()
     assert "detail block ONE" not in index
     assert "detail block TWO" not in index
+
+
+def test_delimiter_ambiguous_flatten_payloads_get_distinct_markers(
+    memory_dir, handoffs_dir
+):
+    write_card(memory_dir, "topic-delimiter", "original\n")
+    index = write_memory_index(
+        memory_dir,
+        [
+            "- [same](topic-delimiter.md) hook|detail",
+            "  next",
+            "- [same](topic-delimiter.md) hook",
+            "  detail|next",
+        ],
+    )
+
+    assert run(cfg(memory_dir, handoffs_dir, max_lines=2), apply=True) == 0
+
+    topic = (memory_dir / "topic-delimiter.md").read_text()
+    assert topic.count("<!-- compact:") == 2
+    assert "hook|detail\n\nnext" in topic
+    assert "hook\n\ndetail|next" in topic
+    assert "\n  next" not in index.read_text()
+    assert "\n  detail|next" not in index.read_text()
+
+
+def test_delimiter_ambiguous_tighten_payloads_get_distinct_markers(
+    memory_dir, handoffs_dir
+):
+    suffix = "long suffix " * 12
+    write_card(memory_dir, "topic-tighten-delimiter", "original\n")
+    index = write_memory_index(
+        memory_dir,
+        [
+            "- [same](topic-tighten-delimiter.md) hook|" + suffix,
+            "- [same|hook](topic-tighten-delimiter.md) " + suffix,
+        ],
+    )
+
+    assert run(
+        cfg(memory_dir, handoffs_dir, max_lines=10, max_hook_chars=40),
+        apply=True,
+    ) == 0
+
+    topic = (memory_dir / "topic-tighten-delimiter.md").read_text()
+    assert topic.count("<!-- compact:tighten:") == 2
+    assert "hook|" + suffix.strip() in topic
+    assert suffix.strip() in topic
+    assert len(index.read_text().splitlines()) == 2
 
 
 def test_topic_file_append_shape(memory_dir, handoffs_dir):
@@ -514,7 +843,7 @@ def test_compact_preserves_link_targets_on_normalize(memory_dir, handoffs_dir):
     ])
     code = run(cfg(memory_dir, handoffs_dir, max_lines=180), apply=True)
     assert code == 0
-    text = (memory_dir / "MEMORY.md").read_text()
+    text = (memory_dir / "MEMORY.md").read_text(encoding="utf-8")
     assert "(topic—x.md)" in text
     assert "em - dash" in text
     assert text.startswith("- [topic-x](topic—x.md)")
@@ -541,6 +870,13 @@ def _commit_all(memory_dir):
     )
 
 
+def _parent_snapshot(memory_dir: Path) -> set[tuple[str, str]]:
+    return {
+        (path.name, "dir" if path.is_dir() else "file")
+        for path in memory_dir.parent.iterdir()
+    }
+
+
 def test_plain_apply_refuses_dirty_index(git_memory_dir, handoffs_dir, capsys):
     memory_dir = git_memory_dir
     write_card(memory_dir, "topic-b", "## existing\nbody")
@@ -558,6 +894,32 @@ def test_plain_apply_refuses_dirty_index(git_memory_dir, handoffs_dir, capsys):
     err = capsys.readouterr().err
     assert "refusing to apply" in err
     assert "MEMORY.md" in err
+
+
+def test_repeated_cards_prefix_cannot_bypass_dirty_tighten_target(
+    git_memory_dir, handoffs_dir
+):
+    card = write_card(git_memory_dir, "dirty", "original\n")
+    index = write_memory_index(
+        git_memory_dir,
+        [
+            "- [dirty](cards/cards/dirty.md) "
+            + ("long hook content " * 12).strip()
+        ],
+    )
+    _commit_all(git_memory_dir)
+    card.write_text("original\noperator edit\n", encoding="utf-8")
+    before_parent = _parent_snapshot(git_memory_dir)
+    before_card = card.read_bytes()
+    before_index = index.read_bytes()
+
+    assert run(
+        cfg(git_memory_dir, handoffs_dir, max_hook_chars=10), apply=True
+    ) == 0
+
+    assert _parent_snapshot(git_memory_dir) == before_parent
+    assert card.read_bytes() == before_card
+    assert index.read_bytes() == before_index
 
 
 def test_plain_apply_proceeds_on_clean_tree(git_memory_dir, handoffs_dir):
@@ -585,3 +947,489 @@ def test_compact_double_apply_reaches_fixed_point(memory_dir, handoffs_dir, caps
     assert code2 == 0
     assert "no action needed" in capsys.readouterr().out
     assert (memory_dir / "MEMORY.md").read_bytes() == after_first
+
+
+def test_compact_no_work_fast_path_never_applies_concurrently_arriving_work(
+    memory_dir, handoffs_dir, monkeypatch, capsys
+):
+    from memory_doctor import compact as compact_mod
+
+    card = write_card(memory_dir, "topic-raced-no-work", "original body\n")
+    index = write_memory_index(
+        memory_dir,
+        ["- [topic-raced-no-work](topic-raced-no-work.md) initial hook"],
+    )
+    real_probe = compact_mod.has_pending_transaction_recovery
+    probe_count = 0
+
+    def add_work_after_final_probe(path: Path) -> bool:
+        nonlocal probe_count
+        result = real_probe(path)
+        probe_count += 1
+        if probe_count == 2:
+            index.write_text(
+                "- [topic-raced-no-work](topic-raced-no-work.md) initial hook\n"
+                "  concurrently arrived detail\n"
+            )
+        return result
+
+    monkeypatch.setattr(
+        compact_mod,
+        "has_pending_transaction_recovery",
+        add_work_after_final_probe,
+    )
+
+    assert run(cfg(memory_dir, handoffs_dir, max_lines=1), apply=True) == 0
+    assert "dry-run" in capsys.readouterr().out
+    assert card.read_text() == "original body\n"
+    assert "concurrently arrived detail" in index.read_text()
+
+
+def test_compact_restart_recovers_rewritten_index_before_no_work_return(
+    memory_dir, handoffs_dir, capsys
+):
+    from memory_doctor.compact import _apply_flatten
+    from memory_doctor.transaction import ApplyTransaction
+
+    card = write_card(memory_dir, "topic-b", "body\n")
+    index = write_memory_index(
+        memory_dir,
+        [
+            "- [topic-b](topic-b.md) - first",
+            "  detail moved after restart",
+        ],
+    )
+    original_card = card.read_text()
+    original_index = index.read_text()
+    config = cfg(memory_dir, handoffs_dir, max_lines=1)
+    plan = plan_compaction(
+        memory_dir,
+        config.max_lines,
+        max_hook_chars=config.max_hook_chars,
+    )
+    abandoned = ApplyTransaction(memory_dir)
+    abandoned.__enter__()
+    abandoned.preflight_mutations()
+    _apply_flatten(memory_dir, plan, abandoned)
+    recovery_artifacts = [
+        record.quarantine
+        for record in abandoned._files.values()
+        if record.quarantine.exists()
+    ]
+    journal = abandoned._journal_path
+    expected_card = card.read_bytes()
+    expected_index = index.read_bytes()
+    abandoned._release_lock()
+
+    assert index.read_text() != original_index
+    assert card.read_text() != original_card
+    assert journal.exists()
+
+    assert run(config, apply=True) == 0
+
+    assert "recovered an interrupted apply transaction" in capsys.readouterr().err
+    assert card.read_bytes() == expected_card
+    assert index.read_bytes() == expected_index
+    assert card.read_text().count("detail moved after restart") == 1
+    assert all(not path.exists() for path in recovery_artifacts)
+    assert not journal.exists()
+
+
+def test_compact_rechecks_recovery_after_concurrent_index_rewrite(
+    memory_dir, handoffs_dir, monkeypatch
+):
+    from memory_doctor import compact as compact_mod
+    from memory_doctor.transaction import ApplyTransaction
+
+    card = write_card(memory_dir, "topic-race", "body\n")
+    index = write_memory_index(
+        memory_dir,
+        [
+            "- [topic-race](topic-race.md) - first",
+            "  detail raced after probe",
+        ],
+    )
+    config = cfg(memory_dir, handoffs_dir, max_lines=1)
+    real_probe = compact_mod.has_pending_transaction_recovery
+    raced = False
+
+    def crash_after_first_probe(path: Path) -> bool:
+        nonlocal raced
+        result = real_probe(path)
+        if not raced:
+            raced = True
+            plan = plan_compaction(
+                memory_dir,
+                config.max_lines,
+                max_hook_chars=config.max_hook_chars,
+            )
+            abandoned = ApplyTransaction(memory_dir)
+            abandoned.__enter__()
+            abandoned.preflight_mutations()
+            compact_mod._apply_flatten(memory_dir, plan, abandoned)
+            abandoned._release_lock()
+        return result
+
+    monkeypatch.setattr(
+        compact_mod, "has_pending_transaction_recovery", crash_after_first_probe
+    )
+
+    assert run(config, apply=True) == 0
+    assert card.read_text().count("detail raced after probe") == 1
+    assert "detail raced after probe" not in index.read_text()
+
+
+def test_compact_preserves_index_replaced_after_locked_plan(
+    memory_dir, handoffs_dir, monkeypatch
+):
+    from memory_doctor import compact as compact_mod
+
+    card = write_card(memory_dir, "topic-race", "original card\n")
+    index = write_memory_index(
+        memory_dir,
+        [
+            "- [topic-race](topic-race.md) - first",
+            "  stale detail",
+        ],
+    )
+    operator_bytes = b"# operator replacement\n"
+    real_plan = compact_mod.plan_compaction
+    plan_count = 0
+
+    def replace_after_locked_plan(*args, **kwargs):
+        nonlocal plan_count
+        plan = real_plan(*args, **kwargs)
+        plan_count += 1
+        if plan_count == 2:
+            operator_path = memory_dir / "operator.tmp"
+            operator_path.write_bytes(operator_bytes)
+            operator_path.replace(index)
+        return plan
+
+    monkeypatch.setattr(compact_mod, "plan_compaction", replace_after_locked_plan)
+
+    assert run(cfg(memory_dir, handoffs_dir, max_lines=1), apply=True) == 2
+    assert index.read_bytes() == operator_bytes
+    assert card.read_text() == "original card\n"
+
+
+def test_compact_preserves_card_replaced_after_locked_plan(
+    memory_dir, handoffs_dir, monkeypatch
+):
+    from memory_doctor import compact as compact_mod
+
+    card = write_card(memory_dir, "topic-race", "original card\n")
+    index = write_memory_index(
+        memory_dir,
+        [
+            "- [topic-race](topic-race.md) - first",
+            "  stale detail",
+        ],
+    )
+    original_index = index.read_bytes()
+    real_plan = compact_mod.plan_compaction
+    plan_count = 0
+
+    def replace_card_after_locked_plan(*args, **kwargs):
+        nonlocal plan_count
+        plan = real_plan(*args, **kwargs)
+        plan_count += 1
+        if plan_count == 2:
+            operator_path = memory_dir / "operator-card.tmp"
+            operator_path.write_text("operator replacement\n")
+            operator_path.replace(card)
+        return plan
+
+    monkeypatch.setattr(
+        compact_mod,
+        "plan_compaction",
+        replace_card_after_locked_plan,
+    )
+
+    assert run(cfg(memory_dir, handoffs_dir, max_lines=1), apply=True) == 2
+    assert card.read_text() == "operator replacement\n"
+    assert index.read_bytes() == original_index
+
+
+def test_compact_preserves_marker_card_replaced_before_index_rewrite(
+    memory_dir, handoffs_dir, monkeypatch
+):
+    from memory_doctor import compact as compact_mod
+
+    card = write_card(memory_dir, "topic-marker-race", "original card\n")
+    index_lines = [
+        "- [topic-marker-race](topic-marker-race.md) - first",
+        "  stale detail",
+    ]
+    index = write_memory_index(memory_dir, index_lines)
+
+    assert run(cfg(memory_dir, handoffs_dir, max_lines=1), apply=True) == 0
+    assert "<!-- compact:" in card.read_text()
+
+    write_memory_index(memory_dir, index_lines)
+    original_index = index.read_bytes()
+    real_marker = compact_mod._flatten_marker
+    replaced = False
+
+    def replace_card_before_marker_check(today, flatten):
+        nonlocal replaced
+        marker = real_marker(today, flatten)
+        if not replaced:
+            replaced = True
+            operator_path = memory_dir / "operator-marker-card.tmp"
+            operator_path.write_text("operator replacement\n")
+            operator_path.replace(card)
+        return marker
+
+    monkeypatch.setattr(
+        compact_mod,
+        "_flatten_marker",
+        replace_card_before_marker_check,
+    )
+
+    assert run(cfg(memory_dir, handoffs_dir, max_lines=1), apply=True) == 2
+    assert card.read_text() == "operator replacement\n"
+    assert index.read_bytes() == original_index
+
+
+def test_compact_preserves_marker_card_replaced_during_index_write(
+    memory_dir, handoffs_dir, monkeypatch
+):
+    from memory_doctor import transaction as transaction_mod
+
+    card = write_card(memory_dir, "topic-marker-commit", "original card\n")
+    index_lines = [
+        "- [topic-marker-commit](topic-marker-commit.md) - first",
+        "  stale detail",
+    ]
+    index = write_memory_index(memory_dir, index_lines)
+
+    assert run(cfg(memory_dir, handoffs_dir, max_lines=1), apply=True) == 0
+    assert "<!-- compact:" in card.read_text()
+
+    write_memory_index(memory_dir, index_lines)
+    original_index = index.read_bytes()
+    real_write = transaction_mod.ApplyTransaction.write_text
+    replaced = False
+
+    def replace_card_during_index_write(self, path, content, **kwargs):
+        nonlocal replaced
+        if path == index and not replaced:
+            replaced = True
+            operator_path = memory_dir / "operator-marker-commit.tmp"
+            operator_path.write_text("operator replacement\n")
+            operator_path.replace(card)
+        return real_write(self, path, content, **kwargs)
+
+    monkeypatch.setattr(
+        transaction_mod.ApplyTransaction,
+        "write_text",
+        replace_card_during_index_write,
+    )
+
+    assert run(cfg(memory_dir, handoffs_dir, max_lines=1), apply=True) == 2
+    assert card.read_text() == "operator replacement\n"
+    assert index.read_bytes() == original_index
+
+
+def test_compact_rolls_back_all_files_when_late_write_fails(
+    memory_dir, handoffs_dir, monkeypatch, capsys
+):
+    from memory_doctor import transaction as transaction_mod
+
+    card = write_card(memory_dir, "topic-b", "body\n")
+    index = write_memory_index(memory_dir, [
+        "- [topic-b](topic-b.md) - first",
+        "  detail to flatten",
+    ])
+    original_card = card.read_text()
+    original_index = index.read_text()
+    real_write = transaction_mod.atomic_write_text
+
+    def fail_index(path, content, **kwargs):
+        if path == index:
+            raise OSError("index write exploded")
+        return real_write(path, content, **kwargs)
+
+    monkeypatch.setattr(transaction_mod, "atomic_write_text", fail_index)
+
+    assert run(cfg(memory_dir, handoffs_dir, max_lines=1), apply=True) == 1
+    assert card.read_text() == original_card
+    assert index.read_text() == original_index
+    assert "rolled back" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("error_type", [PermissionError, RuntimeError])
+def test_compact_transaction_construction_failure_is_handled(
+    memory_dir, handoffs_dir, monkeypatch, capsys, error_type
+):
+    card = write_card(memory_dir, "constructor", "body\n")
+    index = write_memory_index(
+        memory_dir,
+        ["- [constructor](constructor.md) hook", "  detail"],
+    )
+    before_parent = _parent_snapshot(memory_dir)
+    before_card = card.read_bytes()
+    before_index = index.read_bytes()
+
+    def fail_construction(*args, **kwargs):
+        raise error_type("cannot resolve memory root")
+
+    monkeypatch.setattr("memory_doctor.compact.ApplyTransaction", fail_construction)
+
+    assert run(cfg(memory_dir, handoffs_dir, max_lines=1), apply=True) == 2
+    err = capsys.readouterr().err
+    assert "transaction recovery incomplete" in err
+    assert "cannot resolve memory root" in err
+    assert "Traceback" not in err
+    assert _parent_snapshot(memory_dir) == before_parent
+    assert card.read_bytes() == before_card
+    assert index.read_bytes() == before_index
+
+
+@pytest.mark.parametrize("error_type", [PermissionError, RuntimeError])
+def test_compact_transaction_entry_failure_is_handled(
+    memory_dir, handoffs_dir, monkeypatch, capsys, error_type
+):
+    card = write_card(memory_dir, "entry", "body\n")
+    index = write_memory_index(
+        memory_dir,
+        ["- [entry](entry.md) hook", "  detail"],
+    )
+    before_parent = _parent_snapshot(memory_dir)
+    before_card = card.read_bytes()
+    before_index = index.read_bytes()
+
+    def fail_entry(transaction):
+        raise error_type("cannot create transaction lock")
+
+    monkeypatch.setattr(
+        "memory_doctor.transaction.ApplyTransaction.__enter__", fail_entry
+    )
+
+    assert run(cfg(memory_dir, handoffs_dir, max_lines=1), apply=True) == 2
+    err = capsys.readouterr().err
+    assert "transaction recovery incomplete" in err
+    assert "cannot create transaction lock" in err
+    assert "Traceback" not in err
+    assert _parent_snapshot(memory_dir) == before_parent
+    assert card.read_bytes() == before_card
+    assert index.read_bytes() == before_index
+
+
+def test_compact_invalid_author_preflight_creates_no_transaction_state(
+    git_memory_dir, handoffs_dir
+):
+    card = write_card(git_memory_dir, "invalid-author", "body\n")
+    index = write_memory_index(
+        git_memory_dir,
+        ["- [invalid-author](invalid-author.md) hook", "  detail"],
+    )
+    _commit_all(git_memory_dir)
+    before_parent = _parent_snapshot(git_memory_dir)
+    before_card = card.read_bytes()
+    before_index = index.read_bytes()
+
+    assert run(
+        cfg(git_memory_dir, handoffs_dir, max_lines=1),
+        apply=True,
+        commit=True,
+        commit_author="bad-author",
+    ) == 2
+
+    assert _parent_snapshot(git_memory_dir) == before_parent
+    assert card.read_bytes() == before_card
+    assert index.read_bytes() == before_index
+
+
+def test_compact_non_git_commit_preflight_creates_no_transaction_state(
+    memory_dir, handoffs_dir
+):
+    card = write_card(memory_dir, "non-git", "body\n")
+    index = write_memory_index(
+        memory_dir,
+        ["- [non-git](non-git.md) hook", "  detail"],
+    )
+    before_parent = _parent_snapshot(memory_dir)
+    before_card = card.read_bytes()
+    before_index = index.read_bytes()
+
+    assert run(cfg(memory_dir, handoffs_dir, max_lines=1), apply=True, commit=True) == 2
+
+    assert _parent_snapshot(memory_dir) == before_parent
+    assert card.read_bytes() == before_card
+    assert index.read_bytes() == before_index
+
+
+def test_compact_dirty_tree_preflight_creates_no_transaction_state(
+    git_memory_dir, handoffs_dir
+):
+    card = write_card(git_memory_dir, "dirty-no-state", "body\n")
+    index = write_memory_index(
+        git_memory_dir,
+        ["- [dirty-no-state](dirty-no-state.md) hook", "  detail"],
+    )
+    _commit_all(git_memory_dir)
+    index.write_text(index.read_text() + "operator edit\n")
+    before_parent = _parent_snapshot(git_memory_dir)
+    before_card = card.read_bytes()
+    before_index = index.read_bytes()
+
+    assert run(cfg(git_memory_dir, handoffs_dir, max_lines=1), apply=True) == 2
+
+    assert _parent_snapshot(git_memory_dir) == before_parent
+    assert card.read_bytes() == before_card
+    assert index.read_bytes() == before_index
+
+
+def test_compact_revalidates_git_status_under_transaction_lock(
+    git_memory_dir, handoffs_dir, monkeypatch
+):
+    card = write_card(git_memory_dir, "race", "body\n")
+    index = write_memory_index(
+        git_memory_dir,
+        ["- [race](race.md) hook", "  detail"],
+    )
+    _commit_all(git_memory_dir)
+    calls = 0
+
+    def clean_then_dirty(memory_dir, paths):
+        nonlocal calls
+        calls += 1
+        return [] if calls == 1 else [(index, " M")]
+
+    monkeypatch.setattr(
+        "memory_doctor.git.files_have_uncommitted_changes", clean_then_dirty
+    )
+
+    assert run(cfg(git_memory_dir, handoffs_dir, max_lines=1), apply=True) == 2
+    assert calls == 2
+    assert card.read_text() == "body\n"
+    assert "detail" in index.read_text()
+
+
+def test_compact_runtime_capability_refusal_happens_before_visible_write(
+    memory_dir, handoffs_dir, monkeypatch, capsys
+):
+    from memory_doctor.transaction import TransactionRecoveryError
+
+    card = write_card(memory_dir, "unsupported", "body\n")
+    index = write_memory_index(
+        memory_dir,
+        ["- [unsupported](unsupported.md) hook", "  detail"],
+    )
+    before_card = card.read_bytes()
+    before_index = index.read_bytes()
+
+    def unsupported_filesystem(transaction):
+        raise TransactionRecoveryError("filesystem lacks hard-link support")
+
+    monkeypatch.setattr(
+        "memory_doctor.transaction.ApplyTransaction.preflight_mutations",
+        unsupported_filesystem,
+    )
+
+    assert run(cfg(memory_dir, handoffs_dir, max_lines=1), apply=True) == 2
+    assert "filesystem lacks hard-link support" in capsys.readouterr().err
+    assert card.read_bytes() == before_card
+    assert index.read_bytes() == before_index
