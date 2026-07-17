@@ -565,7 +565,7 @@ def test_processed_parent_replacement_cannot_redirect_handoff_move(
     transaction = ApplyTransaction(memory_dir, handoffs_dir)
     transaction.__enter__()
     try:
-        with pytest.raises(TransactionRecoveryError, match="processed.*identity changed"):
+        with pytest.raises(TransactionRecoveryError, match=r"processed.*identity changed"):
             transaction.move_handoff(source, destination)
     finally:
         transaction._release_lock()
@@ -1550,7 +1550,7 @@ def test_before_move_revalidates_existing_source_plan(memory_dir, handoffs_dir):
         replacement.write_text("operator replacement\n")
         replacement.replace(source)
 
-        with pytest.raises(TransactionRecoveryError, match="changed after.*planned"):
+        with pytest.raises(TransactionRecoveryError, match=r"changed after.*planned"):
             transaction.before_move(source, destination)
 
         assert not destination.exists()
