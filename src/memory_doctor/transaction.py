@@ -241,14 +241,58 @@ def preflight_visible_path_aliases(
 
 def _rename_noreplace(source: Path, destination: Path) -> None:
     """Atomically rename without replacing an existing destination."""
+    _rename_noreplace_at(source, destination, -100, -100)
+
+
+def _rename_noreplace_at(
+    source: Path | str,
+    destination: Path | str,
+    source_dir_fd: int,
+    destination_dir_fd: int,
+) -> None:
+    """Descriptor-relative implementation used for pinned directories."""
     native, family = _native_no_replace()
     if family == "windows":  # pragma: no cover - exercised on Windows
         native(source, destination)
         return
     if family == "darwin":  # pragma: no cover - exercised on macOS
-        native.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint]
-        native.restype = ctypes.c_int
-        result = native(os.fsencode(source), os.fsencode(destination), 0x00000004)
+        if source_dir_fd == -100 and destination_dir_fd == -100:
+            native.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint]
+            native.restype = ctypes.c_int
+            result = native(
+                os.fsencode(source),
+                os.fsencode(destination),
+                0x00000004,
+            )
+            if result == 0:
+                return
+            error = ctypes.get_errno()
+            raise OSError(
+                error,
+                os.strerror(error),
+                str(source),
+                None,
+                str(destination),
+            )
+        libc = ctypes.CDLL(None, use_errno=True)
+        renameatx_np = getattr(libc, "renameatx_np", None)
+        if renameatx_np is None:
+            raise OSError(errno.ENOTSUP, "atomic descriptor-relative rename is unsupported")
+        renameatx_np.argtypes = [
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_uint,
+        ]
+        renameatx_np.restype = ctypes.c_int
+        result = renameatx_np(
+            source_dir_fd,
+            os.fsencode(source),
+            destination_dir_fd,
+            os.fsencode(destination),
+            0x00000004,
+        )
     else:
         native.argtypes = [
             ctypes.c_int,
@@ -259,9 +303,9 @@ def _rename_noreplace(source: Path, destination: Path) -> None:
         ]
         native.restype = ctypes.c_int
         result = native(
-            -100,
+            source_dir_fd,
             os.fsencode(source),
-            -100,
+            destination_dir_fd,
             os.fsencode(destination),
             1,
         )
@@ -372,6 +416,12 @@ class ApplyTransaction:
         self._phase = "active"
         self._committed = False
         self._capabilities_checked = False
+        self._processed_dir = (
+            self.handoffs_dir / "processed" if self.handoffs_dir else None
+        )
+        self._processed_dir_identity: tuple[int, int] | None = None
+        self._processed_dir_fd: int | None = None
+        self._processed_dir_handle: int | None = None
         self.recovered = False
 
     @property
@@ -567,11 +617,35 @@ class ApplyTransaction:
             raise TransactionError("handoff move requested without a handoffs directory")
         source = self._inside(source, self.handoffs_dir, "handoff source")
         destination = self._inside(destination, self.handoffs_dir, "handoff destination")
-        if any(
-            _same_visible_path_spelling(record.source, source)
-            and _same_visible_path_spelling(record.destination, destination)
-            for record in self._moves
-        ):
+        existing_record = next(
+            (
+                record
+                for record in self._moves
+                if _same_visible_path_spelling(record.source, source)
+                and _same_visible_path_spelling(record.destination, destination)
+            ),
+            None,
+        )
+        if existing_record is not None:
+            try:
+                artifact = self._artifact_identity(source)
+            except OSError as exc:
+                raise TransactionRecoveryError(
+                    f"cannot revalidate planned handoff {source.name}: {exc}"
+                ) from exc
+            if artifact != existing_record.artifact:
+                raise TransactionRecoveryError(
+                    f"handoff {source.name} changed after it was planned; "
+                    "preserve the replacement and retry"
+                )
+            if (
+                expected_identity is not _EXPECTED_IDENTITY_UNSET
+                and artifact != expected_identity
+            ):
+                raise TransactionRecoveryError(
+                    f"handoff {source.name} changed after it was parsed; "
+                    "preserve the replacement and retry"
+                )
             return
         preflight_visible_path_aliases(
             [source, destination], label="handoff move"
@@ -614,6 +688,8 @@ class ApplyTransaction:
     def preflight_mutations(self) -> None:
         """Prove recovery primitives on the mutation filesystem under the lock."""
         if self._capabilities_checked:
+            if self._processed_dir_identity is not None:
+                self._validate_processed_directory_pin()
             return
         if self._lock_file is None:
             raise TransactionRecoveryError(
@@ -651,6 +727,9 @@ class ApplyTransaction:
                     ) from exc
                 probe_directories.append(processed_root)
 
+        if self._processed_dir is not None and self._processed_dir.exists():
+            self._pin_processed_directory(self._processed_dir)
+
         seen_directories: set[tuple[int, int]] = set()
         for directory in probe_directories:
             try:
@@ -675,6 +754,100 @@ class ApplyTransaction:
             self._probe_mutation_directory(directory)
         self._capabilities_checked = True
 
+    def _pin_processed_directory(self, path: Path) -> None:
+        """Hold the processed parent stable for every later child operation."""
+        if self._processed_dir_identity is not None:
+            self._validate_processed_directory_pin()
+            return
+        try:
+            before = path.lstat()
+        except OSError as exc:
+            raise TransactionRecoveryError(
+                f"cannot pin processed handoff directory: {exc}"
+            ) from exc
+        identity = (before.st_dev, before.st_ino)
+        if sys.platform == "win32":  # pragma: no cover - exercised on Windows
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            create_file = kernel32.CreateFileW
+            create_file.argtypes = [
+                ctypes.c_wchar_p,
+                ctypes.c_uint32,
+                ctypes.c_uint32,
+                ctypes.c_void_p,
+                ctypes.c_uint32,
+                ctypes.c_uint32,
+                ctypes.c_void_p,
+            ]
+            create_file.restype = ctypes.c_void_p
+            handle = create_file(
+                str(path),
+                0x80,  # FILE_READ_ATTRIBUTES
+                0x1 | 0x2,  # share reads/writes, but never deletion or rename
+                None,
+                3,  # OPEN_EXISTING
+                0x02000000 | 0x00200000,  # BACKUP_SEMANTICS | OPEN_REPARSE_POINT
+                None,
+            )
+            if handle in (None, ctypes.c_void_p(-1).value):
+                error = ctypes.get_last_error()
+                raise TransactionRecoveryError(
+                    "cannot pin processed handoff directory: "
+                    f"{ctypes.WinError(error)}"
+                )
+            self._processed_dir_handle = int(handle)
+        else:
+            flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+            if hasattr(os, "O_NOFOLLOW"):
+                flags |= os.O_NOFOLLOW
+            try:
+                self._processed_dir_fd = os.open(path, flags)
+            except OSError as exc:
+                raise TransactionRecoveryError(
+                    f"cannot pin processed handoff directory: {exc}"
+                ) from exc
+        self._processed_dir_identity = identity
+        try:
+            self._validate_processed_directory_pin()
+        except Exception:
+            self._close_processed_directory_pin()
+            raise
+
+    def _validate_processed_directory_pin(self) -> None:
+        if self._processed_dir is None or self._processed_dir_identity is None:
+            raise TransactionRecoveryError(
+                "processed handoff directory is not pinned"
+            )
+        try:
+            current = self._processed_dir.lstat()
+        except OSError as exc:
+            raise TransactionRecoveryError(
+                f"processed handoff directory identity changed: {exc}"
+            ) from exc
+        if (current.st_dev, current.st_ino) != self._processed_dir_identity:
+            raise TransactionRecoveryError(
+                "processed handoff directory identity changed during transaction"
+            )
+        if self._processed_dir_fd is not None:
+            opened = os.fstat(self._processed_dir_fd)
+            if (opened.st_dev, opened.st_ino) != self._processed_dir_identity:
+                raise TransactionRecoveryError(
+                    "processed handoff directory pin changed during transaction"
+                )
+
+    def _close_processed_directory_pin(self) -> None:
+        if self._processed_dir_fd is not None:
+            try:
+                os.close(self._processed_dir_fd)
+            finally:
+                self._processed_dir_fd = None
+        if self._processed_dir_handle is not None:  # pragma: no cover - Windows
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+            kernel32.CloseHandle.restype = ctypes.c_int
+            kernel32.CloseHandle(self._processed_dir_handle)
+            self._processed_dir_handle = None
+        self._processed_dir_identity = None
+
     def _probe_mutation_directory(self, directory: Path) -> None:
         """Prove link and no-clobber rename inside one mutation directory."""
         token = uuid.uuid4().hex
@@ -686,20 +859,32 @@ class ApplyTransaction:
             flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
             if hasattr(os, "O_NOFOLLOW"):
                 flags |= os.O_NOFOLLOW
-            fd = os.open(source, flags, 0o600)
+            if self._processed_dir_fd is not None and self._is_processed_child(source):
+                fd = os.open(
+                    source.name,
+                    flags,
+                    0o600,
+                    dir_fd=self._processed_dir_fd,
+                )
+            else:
+                fd = os.open(source, flags, 0o600)
             created.append(source)
             try:
                 os.write(fd, b"transaction capability probe\n")
                 os.fsync(fd)
             finally:
                 os.close(fd)
-            os.link(source, linked, follow_symlinks=False)
+            self._link_paths(source, linked)
             created.append(linked)
-            _rename_noreplace(source, renamed)
+            self._rename_noreplace_paths(source, renamed)
             created.remove(source)
             created.append(renamed)
             identities = {
-                (path.stat().st_dev, path.stat().st_ino) for path in (linked, renamed)
+                (identity.device, identity.inode)
+                for identity in (
+                    self._artifact_identity(linked),
+                    self._artifact_identity(renamed),
+                )
             }
             if len(identities) != 1 or next(iter(identities))[1] == 0:
                 raise OSError("hard-link capability probe changed artifact identity")
@@ -712,13 +897,13 @@ class ApplyTransaction:
             cleanup_errors: list[str] = []
             for path in reversed(created):
                 try:
-                    path.unlink()
+                    self._unlink_path(path)
                 except FileNotFoundError:
                     pass
                 except OSError as exc:
                     cleanup_errors.append(f"{path.name}: {exc}")
             try:
-                _fsync_directory(directory)
+                self._fsync_parent(source)
             except OSError as exc:
                 cleanup_errors.append(f"directory sync: {exc}")
             if cleanup_errors and sys.exc_info()[0] is None:
@@ -726,6 +911,8 @@ class ApplyTransaction:
                     "transaction capability probe cleanup failed: "
                     + "; ".join(cleanup_errors)
                 )
+        if self._processed_dir_identity is not None and self._is_processed_child(source):
+            self._validate_processed_directory_pin()
 
     def after_move(self, source: Path, destination: Path) -> None:
         """Persist the exact artifact produced by a completed handoff move."""
@@ -791,7 +978,7 @@ class ApplyTransaction:
                 "handoff recovery path collision; preserve all paths and resolve manually"
             )
         try:
-            os.link(source, destination, follow_symlinks=False)
+            self._link_paths(source, destination)
         except NotImplementedError as exc:
             raise TransactionRecoveryError(
                 "cannot move handoff safely: hard links are unsupported"
@@ -809,7 +996,16 @@ class ApplyTransaction:
             raise TransactionError(
                 f"cannot link handoff into processed without clobbering: {exc}"
             ) from exc
-        _fsync_directory(destination.parent)
+        try:
+            self._validate_processed_directory_pin()
+        except TransactionRecoveryError:
+            try:
+                self._unlink_path(destination)
+                self._fsync_parent(destination)
+            except OSError:
+                pass
+            raise
+        self._fsync_parent(destination)
         moved_identity = self._identity_if_present(
             destination, f"processed handoff {destination.name}"
         )
@@ -864,6 +1060,9 @@ class ApplyTransaction:
         expected_identity=_EXPECTED_IDENTITY_UNSET,
     ) -> None:
         """Atomically write text after journaling its exact future identity."""
+        expected_bytes = content.encode("utf-8")
+        expected_size = len(expected_bytes)
+        expected_digest = hashlib.sha256(expected_bytes).hexdigest()
         self.before_write(path, expected_identity=expected_identity)
         path = self._inside(path, self.memory_dir, "memory file")
         record = self._files[path]
@@ -901,6 +1100,13 @@ class ApplyTransaction:
             ):
                 raise TransactionRecoveryError(
                     f"atomic write temporary for {path.name} changed before publish"
+                )
+            if (
+                pending_artifact.size != expected_size
+                or pending_artifact.digest != expected_digest
+            ):
+                raise TransactionRecoveryError(
+                    f"atomic write temporary for {path.name} has unexpected content"
                 )
             record.pending_artifact = pending_artifact
             self._write_journal()
@@ -1117,9 +1323,89 @@ class ApplyTransaction:
             raise TransactionError(f"{label} escapes configured root: {path}") from None
         return candidate
 
-    @staticmethod
-    def _lexists(path: Path) -> bool:
+    def _is_processed_child(self, path: Path) -> bool:
+        return (
+            self._processed_dir is not None
+            and _same_visible_path_spelling(path.parent, self._processed_dir)
+        )
+
+    def _lexists(self, path: Path) -> bool:
+        if self._processed_dir_fd is not None and self._is_processed_child(path):
+            try:
+                os.stat(
+                    path.name,
+                    dir_fd=self._processed_dir_fd,
+                    follow_symlinks=False,
+                )
+                return True
+            except FileNotFoundError:
+                return False
         return os.path.lexists(path)
+
+    def _link_paths(self, source: Path, destination: Path) -> None:
+        source_arg: Path | str = source
+        destination_arg: Path | str = destination
+        kwargs: dict[str, object] = {"follow_symlinks": False}
+        if self._processed_dir_fd is not None:
+            if self._is_processed_child(source):
+                source_arg = source.name
+                kwargs["src_dir_fd"] = self._processed_dir_fd
+            if self._is_processed_child(destination):
+                destination_arg = destination.name
+                kwargs["dst_dir_fd"] = self._processed_dir_fd
+        os.link(source_arg, destination_arg, **kwargs)
+
+    def _rename_noreplace_paths(self, source: Path, destination: Path) -> None:
+        source_is_processed = (
+            os.name == "posix"
+            and self._processed_dir_fd is not None
+            and self._is_processed_child(source)
+        )
+        destination_is_processed = (
+            os.name == "posix"
+            and self._processed_dir_fd is not None
+            and self._is_processed_child(destination)
+        )
+        if not source_is_processed and not destination_is_processed:
+            _rename_noreplace(source, destination)
+            return
+        source_arg: Path | str = source
+        destination_arg: Path | str = destination
+        source_dir_fd = -100
+        destination_dir_fd = -100
+        if self._processed_dir_fd is not None:
+            if source_is_processed:
+                source_arg = source.name
+                source_dir_fd = self._processed_dir_fd
+            if destination_is_processed:
+                destination_arg = destination.name
+                destination_dir_fd = self._processed_dir_fd
+        _rename_noreplace_at(
+            source_arg,
+            destination_arg,
+            source_dir_fd,
+            destination_dir_fd,
+        )
+
+    def _unlink_path(self, path: Path) -> None:
+        if self._processed_dir_fd is not None and self._is_processed_child(path):
+            os.unlink(path.name, dir_fd=self._processed_dir_fd)
+            return
+        path.unlink()
+
+    def _fsync_parent(self, path: Path) -> None:
+        if self._processed_dir_fd is not None and self._is_processed_child(path):
+            try:
+                os.fsync(self._processed_dir_fd)
+            except OSError as exc:
+                if exc.errno not in {
+                    errno.EINVAL,
+                    getattr(errno, "ENOTSUP", errno.EINVAL),
+                    getattr(errno, "EOPNOTSUPP", errno.EINVAL),
+                }:
+                    raise
+            return
+        _fsync_directory(path.parent)
 
     @staticmethod
     def _is_reparse_point(path_stat: os.stat_result) -> bool:
@@ -1271,6 +1557,8 @@ class ApplyTransaction:
     def _snapshot_regular(
         self, path: Path
     ) -> tuple[bytes, _ArtifactIdentity, int]:
+        if self._processed_dir_fd is not None and self._is_processed_child(path):
+            return self._snapshot_processed_regular(path)
         before = path.lstat()
         if not stat.S_ISREG(before.st_mode) or self._is_reparse_point(before):
             raise OSError("transaction artifact is not a regular file")
@@ -1324,6 +1612,53 @@ class ApplyTransaction:
         )
         return content, identity, stat.S_IMODE(after.st_mode)
 
+    def _snapshot_processed_regular(
+        self, path: Path
+    ) -> tuple[bytes, _ArtifactIdentity, int]:
+        """Snapshot a processed child through its pinned parent descriptor."""
+        assert self._processed_dir_fd is not None
+        flags = os.O_RDONLY
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        fd = os.open(path.name, flags, dir_fd=self._processed_dir_fd)
+        try:
+            before = os.fstat(fd)
+            if not stat.S_ISREG(before.st_mode) or self._is_reparse_point(before):
+                raise OSError("transaction artifact is not a regular file")
+            chunks: list[bytes] = []
+            while True:
+                chunk = os.read(fd, 1024 * 1024)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+            content = b"".join(chunks)
+            after = os.fstat(fd)
+        finally:
+            os.close(fd)
+        before_marker = (
+            before.st_dev,
+            before.st_ino,
+            before.st_size,
+            before.st_mtime_ns,
+            stat.S_IMODE(before.st_mode),
+        )
+        after_marker = (
+            after.st_dev,
+            after.st_ino,
+            after.st_size,
+            after.st_mtime_ns,
+            stat.S_IMODE(after.st_mode),
+        )
+        if before_marker != after_marker:
+            raise OSError("transaction artifact changed while it was inspected")
+        identity = _ArtifactIdentity(
+            device=after.st_dev,
+            inode=after.st_ino,
+            size=after.st_size,
+            digest=hashlib.sha256(content).hexdigest(),
+        )
+        return content, identity, stat.S_IMODE(after.st_mode)
+
     @staticmethod
     def _is_windows_read_only(path_stat: os.stat_result) -> bool:
         read_only_flag = getattr(stat, "FILE_ATTRIBUTE_READONLY", 0x1)
@@ -1359,6 +1694,8 @@ class ApplyTransaction:
                 raise TransactionRecoveryError(
                     "handoffs root identity changed; recovery requires manual inspection"
                 )
+        if self._processed_dir_identity is not None:
+            self._validate_processed_directory_pin()
 
     def _artifact_identity(self, path: Path) -> _ArtifactIdentity:
         return self._snapshot_regular(path)[1]
@@ -1863,7 +2200,7 @@ class ApplyTransaction:
             if not self._lexists(path):
                 return None
             try:
-                _rename_noreplace(path, quarantine)
+                self._rename_noreplace_paths(path, quarantine)
             except OSError as exc:
                 if exc.errno != errno.EEXIST:
                     raise OSError(
@@ -1871,7 +2208,7 @@ class ApplyTransaction:
                     ) from exc
             else:
                 renamed_here = True
-                _fsync_directory(path.parent)
+                self._fsync_parent(path)
         actual = self._identity_if_present(quarantine, f"quarantined {label}")
         if actual is None:
             raise OSError(
@@ -1880,8 +2217,8 @@ class ApplyTransaction:
         if actual != expected:
             if renamed_here and not self._lexists(path):
                 try:
-                    _rename_noreplace(quarantine, path)
-                    _fsync_directory(path.parent)
+                    self._rename_noreplace_paths(quarantine, path)
+                    self._fsync_parent(path)
                 except OSError as restore_exc:
                     raise OSError(
                         f"{label} no longer matches the transaction artifact; "
@@ -1908,8 +2245,8 @@ class ApplyTransaction:
             return
         if actual != expected:
             raise OSError(f"{label} changed; preserve it and resolve manually")
-        path.unlink()
-        _fsync_directory(path.parent)
+        self._unlink_path(path)
+        self._fsync_parent(path)
 
     def _path_matches_original(self, path: Path, record: _FileRecord) -> bool:
         if (
@@ -2237,7 +2574,7 @@ class ApplyTransaction:
         if source_identity is None:
             assert private_source is not None
             try:
-                os.link(private_source, record.source, follow_symlinks=False)
+                self._link_paths(private_source, record.source)
             except NotImplementedError as exc:
                 raise OSError(
                     errno.ENOTSUP, "hard-link handoff restore is unsupported"
@@ -2377,6 +2714,7 @@ class ApplyTransaction:
 
     def _release_lock(self) -> None:
         """Release the process lock; exposed only to simulate a crashed owner in tests."""
+        self._close_processed_directory_pin()
         if self._lock_file is None:
             return
         active_exception = sys.exc_info()[0] is not None

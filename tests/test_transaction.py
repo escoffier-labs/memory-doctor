@@ -472,7 +472,7 @@ def test_mutation_capability_failure_precedes_journal_and_visible_write(
 
     assert card.read_text() == "original\n"
     assert not transaction._journal_path.exists()
-    assert not list(transaction._state_dir.glob(".cap-*"))
+    assert not list(transaction._state_dir.glob(".memory-doctor-cap-*"))
     transaction._release_lock()
 
 
@@ -538,6 +538,41 @@ def test_processed_symlink_is_rejected_before_external_capability_probe(
         transaction._release_lock()
 
     assert list(external.iterdir()) == []
+
+
+def test_processed_parent_replacement_cannot_redirect_handoff_move(
+    memory_dir, handoffs_dir, tmp_path, monkeypatch
+):
+    from memory_doctor import transaction as transaction_mod
+
+    source = handoffs_dir / "pending.md"
+    source.write_text("handoff\n")
+    processed = handoffs_dir / "processed"
+    destination = processed / source.name
+    relocated = tmp_path / "relocated-processed"
+    real_link = transaction_mod.os.link
+    swapped = False
+
+    def replace_parent_before_link(actual_source, actual_destination, **kwargs):
+        nonlocal swapped
+        if not swapped and actual_source == source:
+            processed.rename(relocated)
+            processed.mkdir()
+            swapped = True
+        return real_link(actual_source, actual_destination, **kwargs)
+
+    monkeypatch.setattr(transaction_mod.os, "link", replace_parent_before_link)
+    transaction = ApplyTransaction(memory_dir, handoffs_dir)
+    transaction.__enter__()
+    try:
+        with pytest.raises(TransactionRecoveryError, match="processed.*identity changed"):
+            transaction.move_handoff(source, destination)
+    finally:
+        transaction._release_lock()
+
+    assert source.read_text() == "handoff\n"
+    assert list(relocated.iterdir()) == []
+    assert list(processed.iterdir()) == []
 
 
 def test_root_with_zero_inode_is_rejected(memory_dir, handoffs_dir, monkeypatch):
@@ -1502,6 +1537,27 @@ def test_before_move_rejects_source_destination_alias_before_journal(
     assert sum(entry.is_file() for entry in handoffs_dir.iterdir()) == 1
 
 
+def test_before_move_revalidates_existing_source_plan(memory_dir, handoffs_dir):
+    source = handoffs_dir / "pending.md"
+    destination = handoffs_dir / "processed" / source.name
+    source.write_text("original handoff\n")
+
+    transaction = ApplyTransaction(memory_dir, handoffs_dir)
+    transaction.__enter__()
+    try:
+        transaction.before_move(source, destination)
+        replacement = handoffs_dir / "replacement.tmp"
+        replacement.write_text("operator replacement\n")
+        replacement.replace(source)
+
+        with pytest.raises(TransactionRecoveryError, match="changed after.*planned"):
+            transaction.before_move(source, destination)
+
+        assert not destination.exists()
+    finally:
+        transaction._release_lock()
+
+
 def test_recovery_rolls_back_entire_batch_after_late_move_validation_failure(
     memory_dir, handoffs_dir, monkeypatch
 ):
@@ -1614,6 +1670,45 @@ def test_write_text_rejects_replaced_journaled_temporary(
     transaction.__enter__()
     try:
         with pytest.raises(TransactionRecoveryError, match="temporary.*changed"):
+            transaction.write_text(card, "transaction-created\n")
+        assert transaction._files[card].pending_artifact is None
+    finally:
+        transaction._release_lock()
+
+    assert card.read_text(encoding="utf-8") == "original\n"
+
+
+def test_write_text_rejects_in_place_tampered_journaled_temporary(
+    memory_dir, handoffs_dir, monkeypatch
+):
+    from memory_doctor import transaction as transaction_mod
+
+    card = memory_dir / "card.md"
+    card.write_text("original\n", encoding="utf-8")
+    real_atomic_write = transaction_mod.atomic_write_text
+
+    def tamper_before_replacement_journal(path, content, **kwargs):
+        if path != card:
+            return real_atomic_write(path, content, **kwargs)
+        real_before_replace = kwargs["before_replace"]
+
+        def tamper_temporary(temporary: Path) -> None:
+            temporary.write_text("tampered in place\n", encoding="utf-8")
+            real_before_replace(temporary)
+
+        kwargs["before_replace"] = tamper_temporary
+        return real_atomic_write(path, content, **kwargs)
+
+    monkeypatch.setattr(
+        transaction_mod,
+        "atomic_write_text",
+        tamper_before_replacement_journal,
+    )
+
+    transaction = ApplyTransaction(memory_dir, handoffs_dir)
+    transaction.__enter__()
+    try:
+        with pytest.raises(TransactionRecoveryError, match="unexpected content"):
             transaction.write_text(card, "transaction-created\n")
         assert transaction._files[card].pending_artifact is None
     finally:
@@ -1889,7 +1984,10 @@ def test_handoff_hardlink_exdev_fails_before_source_deletion(
     real_link = transaction_mod.os.link
 
     def fail_move_link(actual_source, actual_destination, **kwargs):
-        if actual_source == source and actual_destination == destination:
+        if (
+            actual_source == source
+            and actual_destination in (destination, destination.name)
+        ):
             raise OSError(errno.EXDEV, "cross-device link")
         return real_link(actual_source, actual_destination, **kwargs)
 

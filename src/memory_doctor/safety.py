@@ -80,7 +80,7 @@ def atomic_write_text(
             replace_file(Path(tmp), path)
         replaced = True
         _fsync_directory(path.parent)
-    except Exception:
+    except BaseException:
         if not replaced and cleanup_temp_on_error:
             try:
                 os.unlink(tmp)

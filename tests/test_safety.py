@@ -150,6 +150,23 @@ def test_atomic_write_does_not_unlink_temp_after_replacement(
     assert unlink_calls == []
 
 
+def test_atomic_write_cleans_temp_after_cancellation_before_replace(tmp_path: Path):
+    class Cancelled(BaseException):
+        pass
+
+    path = tmp_path / "card.md"
+    path.write_text("old")
+
+    def cancel(_temporary: Path) -> None:
+        raise Cancelled("stop before replace")
+
+    with pytest.raises(Cancelled, match="stop before replace"):
+        atomic_write_text(path, "new", before_replace=cancel)
+
+    assert path.read_text() == "old"
+    assert not list(tmp_path.glob(".card.md.*.tmp"))
+
+
 def test_happy_path_flat_filename(memory_dir: Path):
     out = resolve_card_target(memory_dir, "foo.md")
     assert out == (memory_dir / "foo.md").resolve()

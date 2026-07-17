@@ -367,9 +367,6 @@ def _run(
         if rc != 0:
             return rc
 
-    if apply:
-        (cfg.handoffs_dir / "processed").mkdir(exist_ok=True)
-
     mode = "APPLY" if apply else "dry-run"
     print(f"memory-doctor ingest ({mode}): {len(pending)} handoff(s)")
     touched: list[tuple[Path, str]] = []
@@ -490,13 +487,8 @@ def run(
             )
             return 2
         if not recovery_pending:
-            return _run(
-                cfg,
-                apply=True,
-                force=force,
-                commit=commit,
-                commit_author=commit_author,
-            )
+            print("memory-doctor ingest: no pending handoffs")
+            return 0
 
     if not recovery_pending:
         rc = _apply_preflight(
@@ -510,6 +502,15 @@ def run(
 
     try:
         preflight_transaction_capabilities(cfg.memory_dir, cfg.handoffs_dir)
+    except (OSError, RuntimeError, TransactionRecoveryError) as exc:
+        print(
+            f"memory-doctor ingest: transaction recovery incomplete: {exc}",
+            file=sys.stderr,
+        )
+        return 2
+
+    try:
+        (cfg.handoffs_dir / "processed").mkdir(exist_ok=True)
         transaction = ApplyTransaction(cfg.memory_dir, cfg.handoffs_dir)
     except (OSError, RuntimeError, TransactionRecoveryError) as exc:
         print(

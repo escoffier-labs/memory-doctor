@@ -426,14 +426,16 @@ def _apply_flatten(
             applied.append(flatten)
             continue
         legacy_marker = _legacy_flatten_marker(today, flatten)
-        if (
-            legacy_marker in existing
-            and _flatten_preserved_block(
+        if legacy_marker in existing:
+            if _flatten_preserved_block(
                 today,
                 flatten,
                 marker=legacy_marker,
-            ) in existing
-        ):
+            ) not in existing:
+                raise TransactionRecoveryError(
+                    f"memory file {target_path.name} contains legacy compact "
+                    "marker without its preserved payload"
+                )
             applied.append(flatten)
             continue
         sep = "" if existing.endswith("\n\n") else ("\n" if existing.endswith("\n") else "\n\n")
@@ -485,15 +487,17 @@ def _apply_flatten(
                 )
         else:
             legacy_marker = _legacy_tighten_marker(today, tighten)
-            legacy_block_present = (
-                legacy_marker in existing
-                and _tighten_preserved_block(
+            if legacy_marker in existing:
+                if _tighten_preserved_block(
                     today,
                     tighten,
                     marker=legacy_marker,
-                ) in existing
-            )
-            if not legacy_block_present:
+                ) not in existing:
+                    raise TransactionRecoveryError(
+                        f"memory file {target_path.name} contains legacy compact "
+                        "marker without its preserved payload"
+                    )
+            else:
                 sep = "" if existing.endswith("\n\n") else ("\n" if existing.endswith("\n") else "\n\n")
                 appended = f"{existing}{sep}{_tighten_preserved_block(today, tighten)}"
                 write_target(target_path, appended, target_identity)
@@ -847,8 +851,8 @@ def run(
         if not recovery_pending:
             return _run(
                 cfg,
-                apply=True,
-                commit=commit,
+                apply=False,
+                commit=False,
                 commit_author=commit_author,
             )
     if not recovery_pending:
@@ -882,8 +886,8 @@ def run(
             if not recovery_pending:
                 return _run(
                     cfg,
-                    apply=True,
-                    commit=commit,
+                    apply=False,
+                    commit=False,
                     commit_author=commit_author,
                 )
     if not recovery_pending:
@@ -906,8 +910,8 @@ def run(
             if not recovery_pending:
                 return _run(
                     cfg,
-                    apply=True,
-                    commit=commit,
+                    apply=False,
+                    commit=False,
                     commit_author=commit_author,
                 )
     if not recovery_pending:

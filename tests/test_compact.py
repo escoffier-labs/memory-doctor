@@ -338,6 +338,60 @@ def test_apply_recognizes_complete_legacy_tighten_block(
     assert full_hook.strip() not in index.read_text()
 
 
+def test_apply_refuses_legacy_flatten_marker_without_preserved_payload(
+    memory_dir, handoffs_dir
+):
+    from memory_doctor import compact as compact_mod
+
+    card = write_card(memory_dir, "topic-legacy-partial", "original body\n")
+    index = write_memory_index(
+        memory_dir,
+        [
+            "- [topic-legacy-partial](topic-legacy-partial.md) first line",
+            "  legacy detail",
+        ],
+    )
+    plan = plan_compaction(memory_dir, max_lines=1)
+    today = compact_mod.dt.date.today().isoformat()
+    marker = compact_mod._legacy_flatten_marker(today, plan.flattens[0])
+    card.write_text(f"original body\n\n{marker}\n")
+    original_card = card.read_bytes()
+    original_index = index.read_bytes()
+
+    assert run(cfg(memory_dir, handoffs_dir, max_lines=1), apply=True) == 2
+    assert card.read_bytes() == original_card
+    assert index.read_bytes() == original_index
+
+
+def test_apply_refuses_legacy_tighten_marker_without_preserved_payload(
+    memory_dir, handoffs_dir
+):
+    from memory_doctor import compact as compact_mod
+
+    full_hook = "legacy partial hook " * 12
+    card = write_card(memory_dir, "topic-legacy-partial-tighten", "original body\n")
+    index = write_memory_index(
+        memory_dir,
+        [
+            "- [topic-legacy-partial-tighten]"
+            f"(topic-legacy-partial-tighten.md) {full_hook}"
+        ],
+    )
+    plan = plan_compaction(memory_dir, max_lines=10, max_hook_chars=40)
+    today = compact_mod.dt.date.today().isoformat()
+    marker = compact_mod._legacy_tighten_marker(today, plan.tightens[0])
+    card.write_text(f"original body\n\n{marker}\n")
+    original_card = card.read_bytes()
+    original_index = index.read_bytes()
+
+    assert run(
+        cfg(memory_dir, handoffs_dir, max_lines=10, max_hook_chars=40),
+        apply=True,
+    ) == 2
+    assert card.read_bytes() == original_card
+    assert index.read_bytes() == original_index
+
+
 def test_compact_skips_unsafe_target(memory_dir, handoffs_dir, tmp_path, capsys):
     # MEMORY.md references a path-traversal target. Plan must skip it AND
     # apply must never write outside memory_dir.
@@ -893,6 +947,42 @@ def test_compact_double_apply_reaches_fixed_point(memory_dir, handoffs_dir, caps
     assert code2 == 0
     assert "no action needed" in capsys.readouterr().out
     assert (memory_dir / "MEMORY.md").read_bytes() == after_first
+
+
+def test_compact_no_work_fast_path_never_applies_concurrently_arriving_work(
+    memory_dir, handoffs_dir, monkeypatch, capsys
+):
+    from memory_doctor import compact as compact_mod
+
+    card = write_card(memory_dir, "topic-raced-no-work", "original body\n")
+    index = write_memory_index(
+        memory_dir,
+        ["- [topic-raced-no-work](topic-raced-no-work.md) initial hook"],
+    )
+    real_probe = compact_mod.has_pending_transaction_recovery
+    probe_count = 0
+
+    def add_work_after_final_probe(path: Path) -> bool:
+        nonlocal probe_count
+        result = real_probe(path)
+        probe_count += 1
+        if probe_count == 2:
+            index.write_text(
+                "- [topic-raced-no-work](topic-raced-no-work.md) initial hook\n"
+                "  concurrently arrived detail\n"
+            )
+        return result
+
+    monkeypatch.setattr(
+        compact_mod,
+        "has_pending_transaction_recovery",
+        add_work_after_final_probe,
+    )
+
+    assert run(cfg(memory_dir, handoffs_dir, max_lines=1), apply=True) == 0
+    assert "dry-run" in capsys.readouterr().out
+    assert card.read_text() == "original body\n"
+    assert "concurrently arrived detail" in index.read_text()
 
 
 def test_compact_restart_recovers_rewritten_index_before_no_work_return(

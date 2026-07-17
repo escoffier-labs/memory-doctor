@@ -537,41 +537,89 @@ def test_plain_apply_reports_git_status_failure(
     assert handoff.exists()
 
 
-def test_ingest_rolls_back_write_when_processed_move_fails(
+def test_ingest_rolls_back_earlier_write_when_later_processed_move_fails(
     memory_dir, handoffs_dir, monkeypatch, capsys
 ):
     from memory_doctor import transaction as transaction_mod
 
     card = memory_dir / "existing.md"
     card.write_text("original\n")
-    handoff = write_handoff(
+    first_handoff = write_handoff(
         handoffs_dir,
-        "h-move-failure.md",
+        "a-first-update.md",
         action="update-card",
         target="existing.md",
-        content="append once",
+        content="first append",
+    )
+    second_handoff = write_handoff(
+        handoffs_dir,
+        "b-move-failure.md",
+        action="update-card",
+        target="existing.md",
+        content="second append",
     )
     real_move = transaction_mod.ApplyTransaction.move_handoff
-    failed = False
+    move_count = 0
 
-    def fail_first_move(transaction, src, dst, **kwargs):
-        nonlocal failed
-        if not failed:
-            failed = True
+    def fail_second_move(transaction, src, dst, **kwargs):
+        nonlocal move_count
+        move_count += 1
+        if move_count == 2:
             raise OSError("move exploded")
         return real_move(transaction, src, dst, **kwargs)
 
     monkeypatch.setattr(
-        transaction_mod.ApplyTransaction, "move_handoff", fail_first_move
+        transaction_mod.ApplyTransaction, "move_handoff", fail_second_move
     )
 
     assert run(cfg(memory_dir, handoffs_dir), apply=True) == 1
     assert card.read_text() == "original\n"
-    assert handoff.exists()
+    assert first_handoff.exists()
+    assert second_handoff.exists()
+    assert not (handoffs_dir / "processed" / first_handoff.name).exists()
+    assert not (handoffs_dir / "processed" / second_handoff.name).exists()
     assert "rolled back" in capsys.readouterr().err
 
     assert run(cfg(memory_dir, handoffs_dir), apply=True) == 0
-    assert card.read_text().count("append once") == 1
+    assert card.read_text().count("first append") == 1
+    assert card.read_text().count("second append") == 1
+
+
+def test_ingest_no_work_fast_path_never_applies_concurrently_arriving_handoff(
+    memory_dir, handoffs_dir, monkeypatch, capsys
+):
+    from memory_doctor import ingest as ingest_mod
+
+    card = memory_dir / "existing.md"
+    card.write_text("original\n")
+    real_probe = ingest_mod.has_pending_transaction_recovery
+    probe_count = 0
+
+    def add_handoff_after_final_probe(path: Path) -> bool:
+        nonlocal probe_count
+        result = real_probe(path)
+        probe_count += 1
+        if probe_count == 2:
+            write_handoff(
+                handoffs_dir,
+                "arrived-after-probe.md",
+                action="update-card",
+                target=card.name,
+                content="must wait for the next apply",
+            )
+        return result
+
+    monkeypatch.setattr(
+        ingest_mod,
+        "has_pending_transaction_recovery",
+        add_handoff_after_final_probe,
+    )
+
+    assert run(cfg(memory_dir, handoffs_dir), apply=True) == 0
+    assert "no pending handoffs" in capsys.readouterr().out
+    assert card.read_text() == "original\n"
+    assert (handoffs_dir / "arrived-after-probe.md").exists()
+    assert not (handoffs_dir / "processed" / "arrived-after-probe.md").exists()
 
 
 def test_ingest_restart_recovers_quarantined_source_before_no_work_return(
@@ -752,6 +800,11 @@ def test_ingest_syncs_move_directories_before_clearing_journal(
     real_link = transaction_mod.os.link
     real_rename = transaction_mod._rename_noreplace
     real_unlink = Path.unlink
+    real_fsync = transaction_mod.os.fsync
+    processed_identity = (
+        destination.parent.stat().st_dev,
+        destination.parent.stat().st_ino,
+    )
 
     def record_link(source, target, **kwargs):
         calls.append("link")
@@ -767,6 +820,12 @@ def test_ingest_syncs_move_directories_before_clearing_journal(
         else:
             calls.append(f"fsync:{path.name}")
 
+    def record_fd_sync(fd: int) -> None:
+        opened = transaction_mod.os.fstat(fd)
+        if (opened.st_dev, opened.st_ino) == processed_identity:
+            calls.append("fsync:processed")
+        return real_fsync(fd)
+
     def record_unlink(path: Path, *args, **kwargs):
         if path.name.startswith(".mds-"):
             calls.append("unlink-source-quarantine")
@@ -775,6 +834,7 @@ def test_ingest_syncs_move_directories_before_clearing_journal(
         return real_unlink(path, *args, **kwargs)
 
     monkeypatch.setattr(transaction_mod.os, "link", record_link)
+    monkeypatch.setattr(transaction_mod.os, "fsync", record_fd_sync)
     monkeypatch.setattr(transaction_mod, "_rename_noreplace", record_rename)
     monkeypatch.setattr(
         transaction_mod, "_fsync_directory", record_directory_sync, raising=False
