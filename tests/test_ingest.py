@@ -1215,3 +1215,38 @@ def test_ingest_rejects_nested_card_and_processed_handoff_path_overlap(
     assert handoff.read_bytes() == original
     assert not (memory_dir / handoff.name).exists()
     assert not list(handoffs_dir.glob(".memory-doctor-*"))
+
+
+def test_template_is_not_a_pending_handoff(tmp_path):
+    """TEMPLATE.md documents the format; counting it invents a stuck handoff.
+
+    On the Rocinante fleet this showed as "1 pending, oldest 114.8 days" for
+    the entire life of the directory, and every ingest run printed a parse
+    error for it.
+    """
+    from memory_doctor.paths import iter_pending_handoffs
+
+    handoffs = tmp_path / "memory-handoffs"
+    handoffs.mkdir()
+    (handoffs / "TEMPLATE.md").write_text("# Memory Handoff\n", encoding="utf-8")
+    (handoffs / "real-handoff.md").write_text("# Memory Handoff\n", encoding="utf-8")
+
+    pending = iter_pending_handoffs(handoffs)
+    assert [p.name for p in pending] == ["real-handoff.md"]
+
+
+def test_template_match_is_case_insensitive(tmp_path):
+    from memory_doctor.paths import iter_pending_handoffs
+
+    handoffs = tmp_path / "memory-handoffs"
+    handoffs.mkdir()
+    (handoffs / "Template.md").write_text("x", encoding="utf-8")
+    assert iter_pending_handoffs(handoffs) == []
+
+
+def test_empty_inbox_is_empty(tmp_path):
+    from memory_doctor.paths import iter_pending_handoffs
+
+    handoffs = tmp_path / "memory-handoffs"
+    handoffs.mkdir()
+    assert iter_pending_handoffs(handoffs) == []

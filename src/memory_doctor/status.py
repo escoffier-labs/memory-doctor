@@ -6,7 +6,7 @@ import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from memory_doctor.paths import PathConfig
+from memory_doctor.paths import PathConfig, iter_pending_handoffs
 from memory_doctor.lint import count_dead_links
 
 
@@ -44,7 +44,7 @@ def _index_stats(memory_dir: Path) -> tuple[int, int]:
 
 
 def _handoff_counts(handoffs_dir: Path) -> tuple[int, int, float | None]:
-    pending = [p for p in handoffs_dir.glob("*.md")]
+    pending = iter_pending_handoffs(handoffs_dir)
     processed = list((handoffs_dir / "processed").glob("*.md")) if (handoffs_dir / "processed").is_dir() else []
     oldest_age: float | None = None
     if pending:

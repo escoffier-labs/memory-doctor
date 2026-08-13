@@ -13,7 +13,7 @@ from memory_doctor.git import (
     working_tree_sane,
 )
 from memory_doctor.parsing import HandoffParseError, ParsedHandoff, parse_handoff
-from memory_doctor.paths import PathConfig
+from memory_doctor.paths import PathConfig, iter_pending_handoffs
 from memory_doctor.safety import (
     UnsafeTargetError,
     atomic_write_text,
@@ -349,7 +349,7 @@ def _run(
         # forget --apply, and the message guides them to the right thing.
         print("memory-doctor ingest: skipping commit (dry-run; use --apply)")
 
-    pending = sorted(p for p in cfg.handoffs_dir.glob("*.md"))
+    pending = iter_pending_handoffs(cfg.handoffs_dir)
     if not pending:
         print("memory-doctor ingest: no pending handoffs")
         return 0
@@ -476,7 +476,7 @@ def run(
         )
         return 2
 
-    pending = sorted(path for path in cfg.handoffs_dir.glob("*.md"))
+    pending = iter_pending_handoffs(cfg.handoffs_dir)
     if not pending and not recovery_pending:
         try:
             recovery_pending = has_pending_transaction_recovery(cfg.memory_dir)
