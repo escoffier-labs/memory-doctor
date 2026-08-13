@@ -23,6 +23,23 @@ except ImportError:  # pragma: no cover - brigade-cli is a declared dependency
 DEFAULT_MAX_BYTES = 24000
 
 
+# Handoff directories ship a TEMPLATE.md describing the format. It is not a
+# handoff: it has placeholder values in every field, so the parser rejects it,
+# and counting it makes `status` report a pending handoff that never clears.
+# On this fleet that showed as "1 pending, oldest 114.8 days" for the entire
+# life of the directory.
+HANDOFF_TEMPLATE_NAMES = frozenset({"template.md"})
+
+
+def iter_pending_handoffs(handoffs_dir):
+    """Sorted *.md in the handoff inbox, excluding the format template."""
+    return sorted(
+        path
+        for path in handoffs_dir.glob("*.md")
+        if path.name.lower() not in HANDOFF_TEMPLATE_NAMES
+    )
+
+
 def _default_memory_dir() -> str:
     """Derive Claude Code's per-project memory dir from $HOME.
 
