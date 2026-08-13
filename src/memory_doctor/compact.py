@@ -9,7 +9,7 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from memory_doctor.paths import PathConfig
+from memory_doctor.paths import PathConfig, require_unified_layout
 from memory_doctor.safety import (
     UnsafeTargetError,
     atomic_write_text,
@@ -821,6 +821,7 @@ def run(
     commit: bool = False,
     commit_author: str | None = None,
 ) -> int:
+    require_unified_layout(cfg, "compact")
     if not apply:
         return _run(
             cfg,

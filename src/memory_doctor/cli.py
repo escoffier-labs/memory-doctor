@@ -6,11 +6,17 @@ import os
 import sys
 
 from memory_doctor import __version__
-from memory_doctor.paths import PathConfigError, resolve_paths
+from memory_doctor.paths import PathConfigError, SplitLayoutUnsupported, resolve_paths
 
 
 def _add_common(p: argparse.ArgumentParser) -> None:
     p.add_argument("--memory-dir", default=None, help="Memory dir (cards + MEMORY.md).")
+    p.add_argument(
+        "--cards-dir",
+        default=None,
+        help="Cards dir (default: same as --memory-dir). Use when cards live "
+             "in a subdirectory, e.g. OpenClaw's memory/cards.",
+    )
     p.add_argument("--handoffs-dir", default=None, help="Handoffs dir.")
     p.add_argument("--max-lines", type=int, default=None, help="MEMORY.md line threshold (default 180)")
     p.add_argument("--max-bytes", type=int, default=None, help="MEMORY.md byte threshold (default 24000)")
@@ -89,11 +95,20 @@ def main(argv: list[str] | None = None) -> int:
             handoffs_dir=args.handoffs_dir,
             max_lines=args.max_lines,
             max_bytes=args.max_bytes,
+            cards_dir=getattr(args, "cards_dir", None),
         )
     except PathConfigError as e:
         print(f"memory-doctor: {e}", file=sys.stderr)
         return 2
 
+    try:
+        return _dispatch(args, cfg)
+    except SplitLayoutUnsupported as e:
+        print(str(e), file=sys.stderr)
+        return 2
+
+
+def _dispatch(args, cfg) -> int:
     if args.verb == "status":
         from memory_doctor.status import run as run_status
         return run_status(cfg, as_json=args.json)

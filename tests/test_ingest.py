@@ -1250,3 +1250,41 @@ def test_empty_inbox_is_empty(tmp_path):
     handoffs = tmp_path / "memory-handoffs"
     handoffs.mkdir()
     assert iter_pending_handoffs(handoffs) == []
+
+
+def test_writing_verbs_refuse_a_split_layout(tmp_path):
+    """ingest and compact write inside memory_dir; a split store must not
+    silently land cards in the wrong directory."""
+    import pytest
+
+    from memory_doctor.paths import (
+        PathConfig,
+        SplitLayoutUnsupported,
+        require_unified_layout,
+    )
+
+    memory = tmp_path / "memory"
+    cards = memory / "cards"
+    cards.mkdir(parents=True)
+    cfg = PathConfig(
+        memory_dir=memory,
+        handoffs_dir=tmp_path / "handoffs",
+        max_lines=180,
+        cards_dir=cards,
+    )
+    with pytest.raises(SplitLayoutUnsupported, match="only supports the flat layout"):
+        require_unified_layout(cfg, "ingest")
+
+
+def test_unified_layout_passes(tmp_path):
+    from memory_doctor.paths import PathConfig, require_unified_layout
+
+    memory = tmp_path / "memory"
+    memory.mkdir()
+    cfg = PathConfig(
+        memory_dir=memory,
+        handoffs_dir=tmp_path / "handoffs",
+        max_lines=180,
+        cards_dir=memory,
+    )
+    require_unified_layout(cfg, "ingest")  # must not raise

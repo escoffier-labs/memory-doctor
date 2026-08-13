@@ -71,7 +71,15 @@ def _index_link_targets(text: str) -> list[str]:
     return targets
 
 
-def scan_dead_links(memory_dir: Path) -> list[DeadLink]:
+def scan_dead_links(memory_dir: Path, *, index_dir: Path | None = None) -> list[DeadLink]:
+    """Scan cards in ``memory_dir`` plus the MEMORY.md index.
+
+    ``index_dir`` is where MEMORY.md lives. It defaults to ``memory_dir``,
+    which is the flat Claude Code layout. OpenClaw keeps cards in a cards/
+    subdirectory with the index one level up, so the two are passed
+    separately there.
+    """
+    index_dir = index_dir or memory_dir
     slugs = _existing_card_slugs(memory_dir)
     pool = sorted(slugs)
     out: list[DeadLink] = []
@@ -86,7 +94,7 @@ def scan_dead_links(memory_dir: Path) -> list[DeadLink]:
             suggestion = suggest_closest(slug, pool)
             out.append(DeadLink(source=p, link=raw_link, suggestion=suggestion))
 
-    index_path = memory_dir / "MEMORY.md"
+    index_path = index_dir / "MEMORY.md"
     if index_path.exists():
         text = index_path.read_text(errors="replace")
         for raw_link in extract_wiki_links(text):
@@ -106,12 +114,12 @@ def scan_dead_links(memory_dir: Path) -> list[DeadLink]:
     return out
 
 
-def count_dead_links(memory_dir: Path) -> int:
-    return len(scan_dead_links(memory_dir))
+def count_dead_links(memory_dir: Path, *, index_dir: Path | None = None) -> int:
+    return len(scan_dead_links(memory_dir, index_dir=index_dir))
 
 
 def run(cfg: PathConfig) -> int:
-    findings = scan_dead_links(cfg.memory_dir)
+    findings = scan_dead_links(cfg.cards_dir, index_dir=cfg.memory_dir)
     if not findings:
         print("memory-doctor lint: 0 dead links")
         return 0
