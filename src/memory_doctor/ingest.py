@@ -13,7 +13,7 @@ from memory_doctor.git import (
     working_tree_sane,
 )
 from memory_doctor.parsing import HandoffParseError, ParsedHandoff, parse_handoff
-from memory_doctor.paths import PathConfig, iter_pending_handoffs
+from memory_doctor.paths import PathConfig, iter_pending_handoffs, require_unified_layout
 from memory_doctor.safety import (
     UnsafeTargetError,
     atomic_write_text,
@@ -458,6 +458,7 @@ def run(
     commit: bool = False,
     commit_author: str | None = None,
 ) -> int:
+    require_unified_layout(cfg, "ingest")
     if not apply:
         return _run(
             cfg,

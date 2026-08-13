@@ -105,3 +105,51 @@ def test_index_dead_wiki_link_gets_suggestion(memory_dir):
     assert len(findings) == 1
     assert findings[0].kind == "wiki"
     assert findings[0].suggestion == "beta"
+
+
+# Split cards/index layout (OpenClaw) -------------------------------------
+
+
+def _split_store(tmp_path):
+    """OpenClaw shape: cards in a subdir, MEMORY.md one level up."""
+    memory = tmp_path / "memory"
+    cards = memory / "cards"
+    cards.mkdir(parents=True)
+    (cards / "real-card.md").write_text("# Real\n", encoding="utf-8")
+    (cards / "linker.md").write_text(
+        "Related: [[real-card]] and [[ghost-card]].\n", encoding="utf-8"
+    )
+    # A daily log beside cards/ must not be mistaken for a card.
+    (memory / "2026-08-13.md").write_text("daily log\n", encoding="utf-8")
+    (memory / "MEMORY.md").write_text("- [Real](real-card.md)\n", encoding="utf-8")
+    return memory, cards
+
+
+def test_scan_dead_links_honours_split_cards_and_index(tmp_path):
+    from memory_doctor.lint import scan_dead_links
+
+    memory, cards = _split_store(tmp_path)
+    findings = scan_dead_links(cards, index_dir=memory)
+    # ghost-card is dead; real-card resolves; the daily log is not scanned.
+    assert [f.link for f in findings] == ["ghost-card"]
+
+
+def test_index_link_resolves_against_cards_dir(tmp_path):
+    """MEMORY.md lives beside cards/, but its links point at cards."""
+    from memory_doctor.lint import scan_dead_links
+
+    memory, cards = _split_store(tmp_path)
+    (memory / "MEMORY.md").write_text("- [Ghost](ghost.md)\n", encoding="utf-8")
+    findings = scan_dead_links(cards, index_dir=memory)
+    # index findings carry the raw markdown target, not the slug
+    assert any(f.link == "ghost.md" and f.kind == "index" for f in findings)
+
+
+def test_flat_layout_is_unchanged_when_index_dir_omitted(tmp_path):
+    from memory_doctor.lint import scan_dead_links
+
+    flat = tmp_path / "memory"
+    flat.mkdir()
+    (flat / "a.md").write_text("[[missing]]\n", encoding="utf-8")
+    (flat / "MEMORY.md").write_text("index\n", encoding="utf-8")
+    assert [f.link for f in scan_dead_links(flat)] == ["missing"]

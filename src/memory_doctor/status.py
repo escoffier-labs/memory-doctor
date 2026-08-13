@@ -55,10 +55,10 @@ def _handoff_counts(handoffs_dir: Path) -> tuple[int, int, float | None]:
 
 
 def collect_status(cfg: PathConfig) -> Status:
-    cards = _count_cards(cfg.memory_dir)
+    cards = _count_cards(cfg.cards_dir)
     index_lines, index_bytes = _index_stats(cfg.memory_dir)
     pending, processed, oldest = _handoff_counts(cfg.handoffs_dir)
-    dead = count_dead_links(cfg.memory_dir)
+    dead = count_dead_links(cfg.cards_dir, index_dir=cfg.memory_dir)
     return Status(
         memory_dir=str(cfg.memory_dir),
         handoffs_dir=str(cfg.handoffs_dir),

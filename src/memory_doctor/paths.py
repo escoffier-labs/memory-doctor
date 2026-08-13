@@ -56,6 +56,27 @@ DEFAULT_MEMORY_DIR = _default_memory_dir()
 DEFAULT_HANDOFFS_DIR = "~/.openclaw/workspace/.claude/memory-handoffs"
 
 
+class SplitLayoutUnsupported(Exception):
+    """Raised when a writing verb is given a cards_dir distinct from memory_dir."""
+
+
+def require_unified_layout(cfg: "PathConfig", verb: str) -> None:
+    """Writing verbs only support the flat layout for now.
+
+    ingest and compact resolve card targets, run git-safety preflights, and
+    write inside memory_dir. Honouring a separate cards_dir there means
+    deciding which directory the git gate applies to, so until that is settled
+    they refuse rather than write to the wrong place.
+    """
+    if cfg.cards_dir.resolve() != cfg.memory_dir.resolve():
+        raise SplitLayoutUnsupported(
+            f"memory-doctor {verb}: --cards-dir differs from --memory-dir "
+            f"({cfg.cards_dir} vs {cfg.memory_dir}). "
+            f"{verb} only supports the flat layout; use status or lint to audit "
+            "a split store."
+        )
+
+
 class PathConfigError(Exception):
     pass
 
@@ -69,6 +90,26 @@ class PathConfig:
     # Hooks shorter than this stay full in the index; longer ones are
     # "tighten" candidates whose full text is moved into the linked card.
     max_hook_chars: int = 140
+    # Where cards live. Defaults to memory_dir, which is Claude Code's flat
+    # layout with cards beside MEMORY.md. OpenClaw nests them in a cards/
+    # subdirectory alongside daily logs, so auditing that store needs the two
+    # split. Read-only verbs honour the split; writing verbs refuse it via
+    # require_unified_layout().
+    cards_dir: Path | None = None
+
+    def __post_init__(self) -> None:
+        if self.cards_dir is None:
+            object.__setattr__(self, "cards_dir", self.memory_dir)
+    # Where cards live. Defaults to memory_dir, which is Claude Code's flat
+    # layout (cards sit beside MEMORY.md). OpenClaw nests them in a cards/
+    # subdirectory alongside daily logs, so auditing that store needs the two
+    # split. Read-only verbs honour the split; writing verbs refuse it via
+    # require_unified_layout().
+    cards_dir: Path | None = None
+
+    def __post_init__(self) -> None:
+        if self.cards_dir is None:
+            object.__setattr__(self, "cards_dir", self.memory_dir)
 
 
 def _resolve_dir(flag: str | None, env_key: str, default: str, label: str) -> Path:
@@ -87,6 +128,7 @@ def resolve_paths(
     handoffs_dir: str | None,
     max_lines: int | None,
     max_bytes: int | None = None,
+    cards_dir: str | None = None,
 ) -> PathConfig:
     md = _resolve_dir(memory_dir, "MEMORY_DOCTOR_MEMORY_DIR", DEFAULT_MEMORY_DIR, "memory")
     hd = _resolve_dir(handoffs_dir, "MEMORY_DOCTOR_HANDOFFS_DIR", DEFAULT_HANDOFFS_DIR, "handoffs")
@@ -114,4 +156,16 @@ def resolve_paths(
             ) from None
     if nbytes <= 0:
         raise PathConfigError(f"max bytes must be greater than 0, got: {nbytes}")
-    return PathConfig(memory_dir=md, handoffs_dir=hd, max_lines=lines, max_bytes=nbytes)
+    if cards_dir is not None or os.environ.get("MEMORY_DOCTOR_CARDS_DIR"):
+        cd = _resolve_dir(
+            cards_dir, "MEMORY_DOCTOR_CARDS_DIR", str(md), "cards"
+        )
+    else:
+        cd = md
+    return PathConfig(
+        memory_dir=md,
+        handoffs_dir=hd,
+        max_lines=lines,
+        max_bytes=nbytes,
+        cards_dir=cd,
+    )
