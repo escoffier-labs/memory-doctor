@@ -11,6 +11,7 @@ build/
 .claude/memory-handoffs/
 .claude/
 .env
+/error.log
 
 # Local brigade memory (cards are local-only, never committed)
 /memory/
@@ -103,3 +104,4 @@ memory/handoff-inbox/
 .mcp/
 scripts/*.md
 # <<< brigade gitignore block <<<
+.graphtrail/
