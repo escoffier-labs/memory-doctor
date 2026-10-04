@@ -100,16 +100,6 @@ class PathConfig:
     def __post_init__(self) -> None:
         if self.cards_dir is None:
             object.__setattr__(self, "cards_dir", self.memory_dir)
-    # Where cards live. Defaults to memory_dir, which is Claude Code's flat
-    # layout (cards sit beside MEMORY.md). OpenClaw nests them in a cards/
-    # subdirectory alongside daily logs, so auditing that store needs the two
-    # split. Read-only verbs honour the split; writing verbs refuse it via
-    # require_unified_layout().
-    cards_dir: Path | None = None
-
-    def __post_init__(self) -> None:
-        if self.cards_dir is None:
-            object.__setattr__(self, "cards_dir", self.memory_dir)
 
 
 def _resolve_dir(flag: str | None, env_key: str, default: str, label: str) -> Path:
