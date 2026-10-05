@@ -5,18 +5,20 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.3.0] - Unreleased
 
 ### Added
 
+- Split card-directory support for read-only `status` and `lint` through `--cards-dir` or `MEMORY_DOCTOR_CARDS_DIR`. `ingest` and `compact` reject split layouts, including dry runs.
 - Bounded handoff ingestion: parsing now rejects handoff files over 1 MiB and suggested card content over 256 KiB before changing a target card, with the configured byte limit included in parse errors.
 - Apply operations now use a per-memory-directory exclusive lock and recovery journal, restoring card, index, and handoff state after partial write or move failures.
 - Byte-size awareness for MEMORY.md. The Claude Code harness silently drops index content beyond a ~24.4KB read limit, so `status` now reports a byte threshold (default 24000) alongside the line threshold, with OVER/ok markers and new `over_bytes` + `max_bytes` JSON fields. Configure via `--max-bytes N` or `MEMORY_DOCTOR_MAX_BYTES`.
-- `compact` now tightens overlong single-line index entries, not just multi-line ones. When a one-line hook exceeds `max_hook_chars` (default 140) and its linked card exists, the full hook is appended to the card under an idempotent `## From index (date)` breadcrumb and the index line is rewritten with a word-boundary-truncated hook. No pointer or content is lost; re-running is a no-op.
+- `compact` now tightens overlong single-line index entries as well as multi-line ones. When a one-line hook exceeds `max_hook_chars` (default 140) and its linked card exists, the full hook is appended to the card under an idempotent `## From index (date)` breadcrumb and the index line is rewritten with a word-boundary-truncated hook. No pointer or content is lost. Re-running is a no-op.
 - `compact` now triggers when MEMORY.md is over EITHER the line threshold OR the byte threshold, so an index of long single-line entries no longer slips past compaction.
 
 ### Changed
 
+- README documents card-directory configuration, actual path defaults, index-link scanning, and a temporary split-layout example. Repository guidance describes transaction ownership and containment for each artifact.
 - Environment-enabled commit mode now prints an explicit notice, while
   `--no-commit` suppresses both the mode and notice. Commit author overrides
   from CLI flags and environment variables now reject control characters and
@@ -33,6 +35,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `compact` normalizes unicode punctuation (em dash, en dash, horizontal bar, and the arrow / >= / <= / approx / middot glyphs) to ASCII on every line it rewrites plus a final whole-file pass on apply. Link targets are left untouched.
 - `compact` no longer gives up with "No multi-line entries to flatten" when there are overlong single-line hooks or unicode to scrub. The "no action needed" message now prints only when MEMORY.md is genuinely clean and under both thresholds.
+
+### Fixed
+
+- `status` and `ingest` exclude the handoff format template (`TEMPLATE.md`, case-insensitive) from pending handoffs.
+- `compact` removes only the two-character continuation prefix when moving index details into cards, preserving nested list and code indentation and trailing whitespace (#33).
+- `lint` checks the file portion of index Markdown targets with fragments and retains the original target in diagnostics (#34).
+- Removed duplicate card-directory initialization in `PathConfig` (#36).
+- Root `error.log` and generated `.graphtrail/` state are ignored by Git (#38).
 
 ## [0.2.0] - 2026-06-10
 

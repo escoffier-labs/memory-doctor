@@ -17,7 +17,7 @@
 </p>
 
 <p align="center">
-  <a href="https://brigade.tools/memory-doctor">Website</a> &middot; <a href="#install">Install</a> &middot; <a href="https://github.com/escoffier-labs/brigade">brigade memory (embedded)</a>
+  <a href="https://brigade.tools/memory-doctor">Website</a> · <a href="#install">Install</a> · <a href="https://github.com/escoffier-labs/brigade">brigade memory (embedded)</a>
 </p>
 
 <p align="center">
@@ -43,7 +43,7 @@ pipx install memory-doctor   # if published; else clone this repo
 | | Job | What you get |
 |---|---|---|
 | **Status** | See the footprint | Cards, index size, pending handoffs |
-| **Lint** | Catch dead links | Broken wiki links and stale structure |
+| **Lint** | Catch dead links | Missing card targets in wiki links and index Markdown links |
 | **Compact** | Stay under budget | Flatten bloated MEMORY.md into topic cards |
 | **Ingest** | Promote handoffs | Bridge notes into durable memory carefully |
 | **Init Git** | Make changes reviewable | Initialize and baseline the memory directory |
@@ -59,7 +59,7 @@ Generated from [`docs/assets/workflows/memory-care.json`](docs/assets/workflows/
 # Read-only health summary of the memory dir (no writes, exits 0):
 memory-doctor status
 
-# Find dead [[wiki-links]] before they rot the index (exits 1 if any):
+# Find dead wiki links and index Markdown links (exits 1 if any):
 memory-doctor lint
 
 # One-time setup for optional commit-backed apply operations:
@@ -74,20 +74,35 @@ memory-doctor compact
 memory-doctor compact --apply       # actually write
 ```
 
-Point it at any memory layout with `--memory-dir` / `--handoffs-dir` or the matching env vars (see [Configuration](#configuration)). The defaults are tuned for the OpenClaw layout.
+Set `--memory-dir`, `--cards-dir`, and `--handoffs-dir` or the matching env vars for your layout (see [Configuration](#configuration)). `status` and `lint` support separate index and card directories. `ingest` and `compact` require cards beside MEMORY.md and reject split layouts even in dry-run mode.
 
 ## Configuration
 
 | What | Flag | Env | Default |
 |---|---|---|---|
-| Memory dir (cards + MEMORY.md) | `--memory-dir PATH` | `MEMORY_DOCTOR_MEMORY_DIR` | `~/.claude/projects/<project-scope>/memory` |
+| Memory dir (MEMORY.md, also cards in flat layouts) | `--memory-dir PATH` | `MEMORY_DOCTOR_MEMORY_DIR` | `~/.claude/projects/<project-scope>/memory` |
+| Cards dir | `--cards-dir PATH` | `MEMORY_DOCTOR_CARDS_DIR` | Resolved memory dir |
 | Handoffs dir | `--handoffs-dir PATH` | `MEMORY_DOCTOR_HANDOFFS_DIR` | `~/.openclaw/workspace/.claude/memory-handoffs` |
 | MEMORY.md threshold (lines) | `--max-lines N` | `MEMORY_DOCTOR_MAX_LINES` | `180` |
 | MEMORY.md threshold (bytes) | `--max-bytes N` | `MEMORY_DOCTOR_MAX_BYTES` | `24000` |
 | Commit verb output | `--commit` / `--no-commit` | `MEMORY_DOCTOR_COMMIT` | off |
 | Commit author override | `--commit-author "Name <e>"` | `MEMORY_DOCTOR_COMMIT_AUTHOR` | from git config |
 
-`<project-scope>` is the dash-prefixed home-dir path Claude Code uses to scope per-project memory (e.g. `-home-alice` for user `alice`, `-home-bob` for user `bob`). The defaults are tuned for the OpenClaw layout. Override via flags or env for other setups.
+`<project-scope>` is derived from the home-directory path by replacing each `/` with `-` (e.g. `/home/alice` becomes `-home-alice`). The memory default uses Claude Code's flat layout, while the handoffs default uses the OpenClaw workspace inbox. Flags override env vars, which override defaults.
+
+For a split layout, pass the directory containing MEMORY.md as `--memory-dir` and the card directory as `--cards-dir`. This example creates a temporary store and runs both read-only verbs without accessing live memory:
+
+```bash
+split_demo_dir="$(mktemp -d)"
+mkdir -p "$split_demo_dir/memory/cards" "$split_demo_dir/handoffs"
+printf '# Topic\n' > "$split_demo_dir/memory/cards/topic.md"
+printf '%s\n' '- [Topic](cards/topic.md#details)' > "$split_demo_dir/memory/MEMORY.md"
+memory-doctor status --memory-dir "$split_demo_dir/memory" \
+  --cards-dir "$split_demo_dir/memory/cards" --handoffs-dir "$split_demo_dir/handoffs"
+memory-doctor lint --memory-dir "$split_demo_dir/memory" \
+  --cards-dir "$split_demo_dir/memory/cards" --handoffs-dir "$split_demo_dir/handoffs"
+rm -r "$split_demo_dir"
+```
 
 The byte threshold defaults to 24000 because the Claude Code harness silently drops MEMORY.md content read beyond a ~24.4KB limit. An index that is fine on the line count can still have its tail invisible to the agent, so `status` and `compact` track both.
 
@@ -99,17 +114,17 @@ Prints memory dir path, card count, MEMORY.md line+byte count, line and byte thr
 
 ### `lint`
 
-Walks every `.md` in the memory dir, extracts `[[wiki-link]]` references, checks whether each target exists. Reports dead links grouped by source file with a closest-match suggestion (Levenshtein distance ≤ 3). Exits 0 if zero dead links, 1 if any (so you can gate a pre-commit hook on it).
+Scans card `.md` files in the cards dir and MEMORY.md in the memory dir for `[[wiki-link]]` references. Also checks local Markdown links in MEMORY.md against card slugs, accepting the `cards/` prefix and checking the file portion before a `#fragment`. Pure anchors, external URLs, mail links, and other nested paths are ignored. Heading existence is not checked. Reports dead links grouped by source file with a closest-match suggestion (Levenshtein distance ≤ 3). Exits 0 if zero dead links, 1 if any (so you can gate a pre-commit hook on it).
 
 ### `ingest`
 
 Sweeps the handoffs dir for unprocessed `*.md` files matching the standard handoff template. For each one:
 
-- `Recommended memory action: create-card` writes a new card to the memory dir; skips on conflict (use `--force` to overwrite)
-- `Recommended memory action: update-card` appends the suggested content to an existing card; errors if the target is missing
+- `Recommended memory action: create-card` writes a new card to the memory dir. Skips on conflict (use `--force` to overwrite)
+- `Recommended memory action: update-card` appends the suggested content to an existing card. Errors if the target is missing
 - `Recommended memory action: no-card` just moves the handoff to `processed/`
 
-Successful handoffs are moved into `<handoffs-dir>/processed/`. Dry-run by default; `--apply` writes.
+Successful handoffs are moved into `<handoffs-dir>/processed/`. Dry-run by default. `--apply` writes.
 Parsing is capped at 1 MiB per handoff and 256 KiB for the suggested card content. Oversized handoffs fail before any target card is changed and the error reports the applicable byte limit.
 
 Apply runs are serialized per memory directory. Before the first write or handoff move, memory-doctor records a private recovery journal. A failed write or move restores the original files and inbox state. The next apply also restores an interrupted transaction before doing new work. Existing names under `processed/` are treated as collisions and must be resolved by the operator.
@@ -121,7 +136,7 @@ Reads MEMORY.md, counts lines and bytes. Triggers when MEMORY.md is over the lin
 - Flatten: for multi-line entries (bullets whose detail spans more than one line), keep the one-liner in the index and append the detail to the target topic file under a `## From index (YYYY-MM-DD)` section.
 - Tighten: for single-line entries whose hook exceeds `max_hook_chars` (default 140) and whose linked card exists, append the full hook to the card under the same breadcrumb and rewrite the index line with a word-boundary-truncated hook ending in `...`. Dangling links (no card on disk) are left full, since the index may be the only record. No `](...)` pointer is ever dropped.
 
-Every rewritten line is normalized to ASCII punctuation (em dash, en dash, and a few other glyphs become `-`, `->`, `>=`, `<=`, `~`), with a final whole-file normalization pass on apply. Link targets are never touched. Dry-run by default; `--apply` writes (topic files first, MEMORY.md last). Refuses if a target topic file is missing for a flatten candidate (would orphan content). Warns if compaction alone won't bring MEMORY.md under either threshold. Re-running `--apply` is a no-op.
+Every rewritten line is normalized to ASCII punctuation (em dash, en dash, and a few other glyphs become `-`, `->`, `>=`, `<=`, `~`), with a final whole-file normalization pass on apply. Link targets are never touched. Dry-run by default. `--apply` writes (topic files first, MEMORY.md last). Refuses if a target topic file is missing for a flatten candidate (would orphan content). Warns if compaction alone won't bring MEMORY.md under either threshold. Re-running `--apply` is a no-op.
 
 ## Commit integration (v0.2)
 
@@ -138,10 +153,10 @@ memory-doctor compact --apply --commit
 
 `init-git` checks the effective `user.name` and `user.email`, then commits only
 top-level memory Markdown files plus `.gitignore`. If initialization stops
-before the first commit, fix the reported Git error and rerun the same command;
-it resumes the partial repository.
+before the first commit, fix the reported Git error and rerun the same command.
+It resumes the partial repository.
 
-Off by default; opt in via `--commit` or `MEMORY_DOCTOR_COMMIT=1`. When the
+Off by default. Opt in via `--commit` or `MEMORY_DOCTOR_COMMIT=1`. When the
 environment variable enables commit mode without an explicit `--commit`, the
 CLI prints a notice naming the variable. `--no-commit` overrides the env var
 for a single run and suppresses that notice.
@@ -168,7 +183,7 @@ memory-doctor ingest: 3 handoffs promoted
 - baz.md (create-card from 2026-05-22_baz.md)
 ```
 
-No `Co-Authored-By` or `Generated with` trailers; subject already identifies the tool.
+No `Co-Authored-By` or `Generated with` trailers. The subject already identifies the tool.
 
 `--commit` without `--apply` is a no-op and exits 0 (friendly for experimentation).
 
@@ -217,7 +232,7 @@ It does not:
 - run in the background, watch files, or install schedulers
 - make network calls or handle credentials
 - write anything without an explicit `--apply` (`status` and `lint` never write at all)
-- invent or summarize memory content; it checks links, tracks size, moves handoffs, and tightens overlong index lines without losing any pointer
+- invent or summarize memory content. It checks links, tracks size, moves handoffs, and tightens overlong index lines without losing any pointer
 
 What it edits is mechanical and reversible. The content of your memory is yours to curate.
 

@@ -185,6 +185,47 @@ def test_apply_refuses_when_target_missing(memory_dir, handoffs_dir):
     assert (memory_dir / "MEMORY.md").read_text().count("\n") >= 4
 
 
+def test_apply_preserves_continuation_whitespace_on_repeat(memory_dir, handoffs_dir):
+    card = write_card(memory_dir, "topic", "original body\n")
+    original_lines = [
+        "# Memory Index",
+        "- [topic](topic.md) - hook",
+        "  - parent  ",
+        "    - child",
+        "  ```python",
+        "  if ready:",
+        "      nested()  ",
+        "  ```",
+        "\t\t- tab parent",
+        "\t\t\t- tab child",
+    ]
+    index = write_memory_index(memory_dir, original_lines)
+    config = cfg(memory_dir, handoffs_dir, max_lines=2)
+
+    assert run(config, apply=True) == 0
+    expected = (
+        "- parent  \n"
+        "  - child\n"
+        "```python\n"
+        "if ready:\n"
+        "    nested()  \n"
+        "```\n"
+        "- tab parent\n"
+        "\t- tab child\n"
+    )
+    assert expected in card.read_text()
+    assert index.read_text() == "# Memory Index\n- [topic](topic.md) - hook\n"
+    after_apply = (card.read_bytes(), index.read_bytes())
+
+    assert run(config, apply=True) == 0
+    assert (card.read_bytes(), index.read_bytes()) == after_apply
+
+    # Replaying the original index must not append the preserved block twice.
+    write_memory_index(memory_dir, original_lines)
+    assert run(config, apply=True) == 0
+    assert (card.read_bytes(), index.read_bytes()) == after_apply
+
+
 def test_dry_run_no_side_effects(memory_dir, handoffs_dir):
     write_card(memory_dir, "topic-d", "body")
     original_index = [

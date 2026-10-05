@@ -259,7 +259,9 @@ def plan_compaction(
         details: list[str] = []
         j = i + 1
         while j < len(lines) and INDENTED_CONTINUATION_RE.match(lines[j]):
-            details.append(lines[j].strip())
+            # Remove only the two whitespace characters required by the
+            # continuation syntax, keeping nested indentation and hard breaks.
+            details.append(lines[j][2:])
             j += 1
         if details:
             # Reject targets that would escape memory_dir or are otherwise unsafe;

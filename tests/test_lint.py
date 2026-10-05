@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from tests.conftest import write_card
 from memory_doctor.lint import scan_dead_links, suggest_closest
 
@@ -78,6 +80,32 @@ def test_index_cards_prefix_target_resolves(memory_dir):
     write_card(memory_dir, "alpha", "body")
     (memory_dir / "MEMORY.md").write_text("- [Alpha](cards/alpha.md) ok\n")
     assert scan_dead_links(memory_dir) == []
+
+
+@pytest.mark.parametrize("prefix", ["", "cards/"])
+def test_index_fragment_targets_check_file_and_preserve_diagnostic(
+    memory_dir, handoffs_dir, capsys, prefix
+):
+    from memory_doctor.lint import run
+    from memory_doctor.paths import PathConfig
+
+    write_card(memory_dir, "alpha", "body without the requested heading")
+    target = f"{prefix}alphaa.md#section/child"
+    (memory_dir / "MEMORY.md").write_text(
+        f"- [Missing]({target})\n"
+        f"- [Existing]({prefix}Alpha.md#absent-heading)\n"
+        "- [Anchor](#missing.md)\n"
+        "- [External](https://example.com/missing.md#section)\n"
+        "- [Mail](mailto:missing.md#section)\n"
+        "- [Nested](docs/missing.md#section)\n"
+    )
+    findings = scan_dead_links(memory_dir)
+    assert [(f.link, f.kind, f.suggestion) for f in findings] == [
+        (target, "index", "alpha")
+    ]
+    config = PathConfig(memory_dir, handoffs_dir, max_lines=180)
+    assert run(config) == 1
+    assert f"({target}) - no card found" in capsys.readouterr().out
 
 
 def test_index_external_links_ignored(memory_dir):

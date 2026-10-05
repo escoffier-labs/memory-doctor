@@ -55,17 +55,17 @@ def _index_link_targets(text: str) -> list[str]:
     """Local card targets of markdown links in MEMORY.md.
 
     Skips external URLs, anchors, mailto:, and nested paths (other than the
-    conventional 'cards/' prefix, which is stripped): those are not card
-    references and would only produce false positives.
+    conventional 'cards/' prefix): those are not card references and would
+    only produce false positives. Fragments do not affect file validation,
+    but the original target is retained for diagnostics.
     """
     targets: list[str] = []
     for m in MD_LINK_RE.finditer(text):
         target = m.group(2).strip()
         if "://" in target or target.startswith(("#", "mailto:")):
             continue
-        if target.startswith("cards/"):
-            target = target[len("cards/"):]
-        if "/" in target or not target.endswith(".md"):
+        file_target = target.split("#", 1)[0].removeprefix("cards/")
+        if "/" in file_target or not file_target.endswith(".md"):
             continue
         targets.append(target)
     return targets
@@ -105,7 +105,8 @@ def scan_dead_links(memory_dir: Path, *, index_dir: Path | None = None) -> list[
                     suggestion=suggest_closest(slug, pool),
                 ))
         for target in _index_link_targets(text):
-            slug = target.lower().removesuffix(".md")
+            file_target = target.split("#", 1)[0].removeprefix("cards/")
+            slug = file_target.lower().removesuffix(".md")
             if slug not in slugs:
                 out.append(DeadLink(
                     source=index_path, link=target,
